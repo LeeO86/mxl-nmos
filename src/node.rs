@@ -301,8 +301,12 @@ impl NmosNode {
             ["connection", "v1.2", "single"] => Ok((200, json!(["senders/", "receivers/"]))),
             ["connection", "v1.2", "single", "senders"] => Ok((200, model.id_list(true))),
             ["connection", "v1.2", "single", "receivers"] => Ok((200, model.id_list(false))),
-            ["connection", "v1.2", "bulk", "senders"] => Ok((200, model.bulk(true))),
-            ["connection", "v1.2", "bulk", "receivers"] => Ok((200, model.bulk(false))),
+            // IS-05 bulk resources are POST (and OPTIONS). GET is defined as 405.
+            ["connection", "v1.2", "bulk", "senders"]
+            | ["connection", "v1.2", "bulk", "receivers"] => {
+                Err(api_error(405, "bulk staging is POST only"))
+            }
+            ["connection", "v1.2", "single", kind, id] => model.single_index(kind, id),
             ["connection", "v1.2", "single", kind, id, leaf] => model.single_get(kind, id, leaf),
             _ => Err(api_error(404, "not found")),
         }
@@ -622,11 +626,37 @@ impl Model {
             "staged" => Ok((200, staged_json(endpoint))),
             "active" => Ok((200, active_json(endpoint))),
             "constraints" => Ok((200, constraints_json(&self.domains))),
+            "transporttype" => Ok((200, json!("urn:x-nmos:transport:mxl"))),
             "transportfile" if is_sender => Err(api_error(
                 404,
                 "MXL senders do not provide a transport file",
             )),
             _ => Err(api_error(404, "not found")),
+        }
+    }
+
+    fn single_index(&self, kind: &str, id: &str) -> Result<(u16, Value), (u16, Value)> {
+        let is_sender = kind_is_sender(kind)?;
+        let id = parse_id(id)?;
+        if self.key_for(is_sender, id).is_none() {
+            return Err(api_error(404, "sender or receiver not found"));
+        }
+        if is_sender {
+            Ok((
+                200,
+                json!([
+                    "constraints/",
+                    "staged/",
+                    "active/",
+                    "transportfile/",
+                    "transporttype/"
+                ]),
+            ))
+        } else {
+            Ok((
+                200,
+                json!(["constraints/", "staged/", "active/", "transporttype/"]),
+            ))
         }
     }
 
@@ -646,30 +676,6 @@ impl Model {
             .collect();
         ids.sort();
         Value::Array(ids.into_iter().map(Value::String).collect())
-    }
-
-    fn bulk(&self, senders: bool) -> Value {
-        let mut rows: Vec<Value> = self
-            .endpoints
-            .values()
-            .filter(|endpoint| endpoint.kind.is_sender() == senders)
-            .map(|endpoint| {
-                let id = if senders {
-                    endpoint.sender_id(self.node_id)
-                } else {
-                    endpoint.receiver_id(self.node_id)
-                };
-                let mut staged = staged_json(endpoint);
-                staged["id"] = json!(id.to_string());
-                staged
-            })
-            .collect();
-        rows.sort_by(|left, right| {
-            left.get("id")
-                .and_then(|v| v.as_str())
-                .cmp(&right.get("id").and_then(|v| v.as_str()))
-        });
-        Value::Array(rows)
     }
 
     fn publish(&mut self, settings: &NmosSettings) -> Vec<Published> {
@@ -881,6 +887,9 @@ impl Model {
                     "format": format_urn(endpoint.kind),
                     "caps": {
                         "media_types": [media_type],
+                        // BCP-004-01 requires a TAI timestamp whenever constraint_sets
+                        // is present. These caps are fixed for the life of the node.
+                        "version": "0:0",
                         "constraint_sets": [constraints]
                     },
                     "device_id": Endpoint::device_id(node_id, endpoint.flow_id).to_string(),
@@ -1332,28 +1341,44 @@ fn receiver_caps(kind: EndpointKind) -> (&'static str, Value) {
 
 fn interfaces_json() -> Value {
     let discovered = crate::network::discover_interfaces();
-    let mut rows: Vec<Value> = discovered
+    let mut chosen: Vec<_> = discovered
         .interfaces
         .iter()
         .filter(|iface| iface.is_up && !iface.is_loopback)
-        .map(|iface| {
-            json!({
+        .collect();
+    if chosen.is_empty() {
+        chosen = discovered
+            .interfaces
+            .iter()
+            .filter(|iface| iface.is_loopback)
+            .collect();
+    }
+    // IS-04 requires port_id to be a MAC address. Omit attached_network_device
+    // when LLDP data is absent; null is not a valid object there.
+    let rows = chosen
+        .into_iter()
+        .filter_map(|iface| {
+            let port_id = nmos_mac(iface.mac_address.as_deref())?;
+            Some(json!({
                 "name": iface.name,
                 "chassis_id": Value::Null,
-                "port_id": iface.name,
-                "attached_network_device": Value::Null
-            })
+                "port_id": port_id
+            }))
         })
         .collect();
-    if rows.is_empty() {
-        rows.push(json!({
-            "name": "lo",
-            "chassis_id": Value::Null,
-            "port_id": "lo",
-            "attached_network_device": Value::Null
-        }));
-    }
     Value::Array(rows)
+}
+
+/// IS-04 `port_id`: six lowercase hex octets separated by hyphens.
+fn nmos_mac(mac: Option<&str>) -> Option<String> {
+    let mac = mac?;
+    let bytes = mac
+        .split([':', '-', '.'])
+        .filter(|part| !part.is_empty())
+        .map(|part| u8::from_str_radix(part, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    let [a, b, c, d, e, f] = bytes.try_into().ok()?;
+    Some(format!("{a:02x}-{b:02x}-{c:02x}-{d:02x}-{e:02x}-{f:02x}"))
 }
 
 fn uuid_field(value: &Value) -> Uuid {
@@ -1437,4 +1462,23 @@ fn hostname_string() -> String {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::nmos_mac;
+
+    #[test]
+    fn mac_uses_is04_hyphen_form() {
+        assert_eq!(
+            nmos_mac(Some("AA:BB:CC:DD:EE:FF")).as_deref(),
+            Some("aa-bb-cc-dd-ee-ff")
+        );
+        assert_eq!(
+            nmos_mac(Some("aa-bb-cc-dd-ee-ff")).as_deref(),
+            Some("aa-bb-cc-dd-ee-ff")
+        );
+        assert!(nmos_mac(None).is_none());
+        assert!(nmos_mac(Some("enp0s5")).is_none());
+    }
 }

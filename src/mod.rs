@@ -39,6 +39,11 @@ pub fn router(node: NmosNode) -> Router {
     http::router(node)
 }
 
+/// `/x-nmos` on the process router, including the slash-less API root.
+pub fn mounted(node: NmosNode) -> Router {
+    http::mounted(node)
+}
+
 /// Announce the node and register it when `settings.enabled` is set.
 pub fn start(node: NmosNode) {
     if !node.settings().enabled {
@@ -159,6 +164,19 @@ mod tests {
     async fn node_api_is_mounted_at_x_nmos() {
         gstreamer::init().unwrap();
         let app = crate::create_app_with_state(crate::state::AppState::default()).await;
+        let root = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/x-nmos")
+                    .header("origin", "null")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        assert!(root.headers().contains_key("access-control-allow-origin"));
         let response = app
             .oneshot(
                 Request::builder()
@@ -215,6 +233,7 @@ mod tests {
         let (node, _) = node_with(vec![video_flow()], vec![dir.path().to_path_buf()]);
         let app = router(node);
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/node/v1.3/senders")
@@ -226,6 +245,29 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let senders = body_json(response).await;
         let sender = &senders.as_array().unwrap()[0];
+        let node_self = app
+            .oneshot(
+                Request::builder()
+                    .uri("/node/v1.3/self")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let node_self = body_json(node_self).await;
+        for iface in node_self["interfaces"].as_array().unwrap() {
+            assert!(iface.get("attached_network_device").is_none());
+            let port_id = iface["port_id"].as_str().unwrap();
+            let octets: Vec<&str> = port_id.split('-').collect();
+            assert_eq!(octets.len(), 6);
+            assert!(octets.iter().all(|octet| {
+                octet.len() == 2
+                    && octet
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            }));
+        }
+
         assert_eq!(sender["transport"], "urn:x-nmos:transport:mxl");
         assert_eq!(sender["interface_bindings"], serde_json::json!([]));
         assert!(sender["manifest_href"].is_null());
@@ -268,7 +310,56 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(receiver["caps"]["media_types"][0], "audio/float32");
+        assert_eq!(receiver["caps"]["version"], "0:0");
         let receiver_id = receiver["id"].as_str().unwrap().to_string();
+
+        let index = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/connection/v1.2/single/receivers/{receiver_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(index.status(), StatusCode::OK);
+        let index = body_json(index).await;
+        assert!(index
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "transporttype/"));
+
+        let transport = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/connection/v1.2/single/receivers/{receiver_id}/transporttype"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(transport.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(transport).await.as_str().unwrap(),
+            "urn:x-nmos:transport:mxl"
+        );
+
+        let bulk = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/connection/v1.2/bulk/receivers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bulk.status(), StatusCode::METHOD_NOT_ALLOWED);
 
         let constraints = app
             .clone()
@@ -396,5 +487,88 @@ mod tests {
         assert_eq!(commands[0].mxl_flow_id, flow);
         assert_eq!(commands[0].domain_path, dir.path().display().to_string());
         assert_eq!(commands[0].kind, EndpointKind::VideoSender);
+    }
+
+    #[tokio::test]
+    async fn api_root_and_cors_preflight() {
+        let (node, _) = node_with(vec![video_flow()], Vec::new());
+        let app = mounted(node);
+
+        let root = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/x-nmos")
+                    .header("origin", "null")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        assert_eq!(
+            root.headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        let root = body_json(root).await;
+        let names: Vec<&str> = root
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect();
+        assert!(names.contains(&"node/"));
+        assert!(names.contains(&"connection/"));
+
+        let slashed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/x-nmos/")
+                    .header("origin", "null")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(slashed.status(), StatusCode::OK);
+        assert_eq!(body_json(slashed).await, root);
+
+        let options = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/x-nmos/node/v1.3/receivers/679a32d1-54d0-5f3c-a771-5a08c66d8d76/target")
+                    .header("origin", "null")
+                    .header("access-control-request-method", "PUT")
+                    .header("access-control-request-headers", "Content-Type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(options.status(), StatusCode::OK);
+        let allow_methods = options
+            .headers()
+            .get("access-control-allow-methods")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(allow_methods
+            .split(',')
+            .any(|method| method.trim() == "PUT"));
+        assert!(allow_methods
+            .split(',')
+            .any(|method| method.trim() == "GET"));
+        let allow_headers = options
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        assert!(allow_headers
+            .split(',')
+            .any(|name| name.trim() == "content-type"));
     }
 }
