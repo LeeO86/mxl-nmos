@@ -170,7 +170,11 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let listed = body_json(response).await;
-        assert!(listed.as_array().unwrap().iter().any(|item| item == "self/"));
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "self/"));
     }
 
     #[test]
@@ -259,12 +263,10 @@ mod tests {
         assert_eq!(receiver["transport"], "urn:x-nmos:transport:mxl");
         assert_eq!(receiver["interface_bindings"], serde_json::json!([]));
         assert_eq!(receiver["format"], "urn:x-nmos:format:audio");
-        assert!(
-            !receiver["caps"]["constraint_sets"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(!receiver["caps"]["constraint_sets"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert_eq!(receiver["caps"]["media_types"][0], "audio/float32");
         let receiver_id = receiver["id"].as_str().unwrap().to_string();
 
