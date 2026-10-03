@@ -18,7 +18,7 @@ use strom_types::mxl::{
 use strom_types::{Flow, FlowId};
 use uuid::Uuid;
 
-use super::domain::{domain_has_flow, scan_domains, MxlDomain};
+use super::domain::{domain_has_flow, scan_domain_root, scan_domains, MxlDomain};
 use super::settings::NmosSettings;
 
 pub type SnapshotFn = Arc<dyn Fn() -> BoxFuture<'static, Vec<Flow>> + Send + Sync>;
@@ -169,6 +169,8 @@ struct Inner {
     apply: ApplyFn,
     shutdown: AtomicBool,
     started: AtomicBool,
+    /// Last registration POST and heartbeat succeeded.
+    registered_ok: AtomicBool,
     /// `type:id` -> version last accepted by the registry.
     registered: Mutex<HashMap<String, String>>,
     registry: Mutex<RegistryState>,
@@ -199,6 +201,7 @@ impl NmosNode {
                 apply,
                 shutdown: AtomicBool::new(false),
                 started: AtomicBool::new(false),
+                registered_ok: AtomicBool::new(false),
                 registered: Mutex::new(HashMap::new()),
                 registry: Mutex::new(RegistryState {
                     candidates: Vec::new(),
@@ -232,9 +235,27 @@ impl NmosNode {
         self.inner.started.swap(true, Ordering::SeqCst)
     }
 
+    pub fn set_registered(&self, ok: bool) {
+        self.inner.registered_ok.store(ok, Ordering::SeqCst);
+    }
+
+    /// True after the node resource was accepted by the registry and the
+    /// following heartbeat succeeded. False when no registry is configured.
+    pub fn is_registered(&self) -> bool {
+        self.inner.registered_ok.load(Ordering::SeqCst)
+    }
+
+    pub fn registry_required(&self) -> bool {
+        self.inner
+            .settings
+            .registry
+            .as_ref()
+            .is_some_and(|url| !url.trim().is_empty())
+    }
+
     pub async fn sync(&self) {
         let flows = (self.inner.snapshot)().await;
-        let domains = scan_domains(&self.inner.settings.domain_paths);
+        let domains = discover_domains(&self.inner.settings);
         let mut model = lock(&self.inner.model);
         model.domains = domains;
         model.sync_flows(&flows);
@@ -718,7 +739,7 @@ impl Model {
             "id": self.node_id.to_string(),
             "label": settings.label,
             "description": "Strom NMOS node for MXL",
-            "tags": {},
+            "tags": tags_json(&settings.tags),
             "hostname": self.hostname,
             "href": format!("{protocol}://{}:{}/x-nmos/node/v1.3/self", self.host, settings.port),
             "api": {
@@ -739,7 +760,7 @@ impl Model {
         value
     }
 
-    fn devices(&mut self, _settings: &NmosSettings) -> Vec<Value> {
+    fn devices(&mut self, settings: &NmosSettings) -> Vec<Value> {
         let mut by_flow: HashMap<FlowId, (String, Vec<Uuid>, Vec<Uuid>)> = HashMap::new();
         for endpoint in self.endpoints.values() {
             let entry = by_flow
@@ -757,11 +778,16 @@ impl Model {
                 senders.sort();
                 receivers.sort();
                 let id = Endpoint::device_id(self.node_id, flow_id);
+                let label = if settings.label.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{} {name}", settings.label)
+                };
                 let mut value = json!({
                     "id": id.to_string(),
-                    "label": name,
+                    "label": label,
                     "description": "Strom flow",
-                    "tags": {},
+                    "tags": tags_json(&settings.tags),
                     "type": "urn:x-nmos:device:generic",
                     "node_id": self.node_id.to_string(),
                     "senders": senders.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
@@ -1409,7 +1435,39 @@ pub fn tai_now() -> String {
     format!("{}:{}", now.as_secs(), now.subsec_nanos())
 }
 
+fn discover_domains(settings: &NmosSettings) -> Vec<MxlDomain> {
+    let mut domains = scan_domains(&settings.domain_paths);
+    domains.extend(scan_domain_root(&settings.scan_path));
+    if let Some(dir) = &settings.output_domain_dir {
+        domains.extend(scan_domains(std::slice::from_ref(dir)));
+    }
+    domains.sort_by_key(|domain| domain.id);
+    domains.dedup_by_key(|domain| domain.id);
+    domains
+}
+
+fn tags_json(tags: &std::collections::HashMap<String, Vec<String>>) -> Value {
+    let mut object = serde_json::Map::new();
+    for (key, values) in tags {
+        object.insert(key.clone(), json!(values));
+    }
+    Value::Object(object)
+}
+
 fn ensure_node_id(settings: &NmosSettings) -> Uuid {
+    if let Some(seed) = settings.seed.as_ref().filter(|seed| !seed.is_empty()) {
+        let id = super::settings::node_id_from_seed(seed);
+        if let Some(path) = &settings.id_path {
+            let current = std::fs::read_to_string(path).ok();
+            if current.as_deref().map(str::trim) != Some(id.to_string().as_str()) {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, id.to_string());
+            }
+        }
+        return id;
+    }
     if let Some(id) = settings.node_id {
         return id;
     }
@@ -1429,6 +1487,9 @@ fn ensure_node_id(settings: &NmosSettings) -> Uuid {
     Uuid::new_v4()
 }
 
+/// Address placed in IS-04 `href` and `api.endpoints[].host`.
+/// A configured host is used as given. Otherwise the first non-loopback IPv4.
+/// Loopback is only a last resort when nothing else exists (NMOS disabled).
 fn advertise_host(settings: &NmosSettings) -> String {
     if let Some(host) = settings
         .host
@@ -1438,18 +1499,36 @@ fn advertise_host(settings: &NmosSettings) -> String {
     {
         return host.to_string();
     }
+    first_routable_ipv4().unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+pub fn first_routable_ipv4() -> Option<String> {
     let discovered = crate::network::discover_interfaces();
     discovered
         .interfaces
         .iter()
         .filter(|iface| iface.is_up && !iface.is_loopback)
         .find_map(|iface| {
-            iface
-                .ipv4_addresses
-                .first()
-                .map(|addr| addr.address.clone())
+            iface.ipv4_addresses.iter().find_map(|addr| {
+                let ip = addr.address.parse::<std::net::Ipv4Addr>().ok()?;
+                (!ip.is_loopback() && !ip.is_unspecified() && !ip.is_link_local()).then_some(ip)
+            })
         })
-        .unwrap_or_else(|| "127.0.0.1".to_string())
+        .map(|ip| ip.to_string())
+}
+
+/// Accept only an IPv4 literal that other systems can route to.
+pub fn require_announce_ipv4(value: &str) -> Result<String, String> {
+    let ip: std::net::Ipv4Addr = value
+        .trim()
+        .parse()
+        .map_err(|_| format!("'{value}' is not an IPv4 address"))?;
+    if ip.is_unspecified() || ip.is_loopback() {
+        return Err(format!(
+            "'{value}' must not be 0.0.0.0 or 127.0.0.1; set NMOS_HOST_ADDRESS to a routable address"
+        ));
+    }
+    Ok(ip.to_string())
 }
 
 fn hostname_string() -> String {

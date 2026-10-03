@@ -10,8 +10,9 @@ mod node;
 mod register;
 mod settings;
 
-pub use node::{EndpointKind, MxlApply, NmosNode};
-pub use settings::NmosSettings;
+pub use domain::DEFAULT_HISTORY_DURATION_NS;
+pub use node::{first_routable_ipv4, require_announce_ipv4, EndpointKind, MxlApply, NmosNode};
+pub use settings::{output_domain_id_from_seed, NmosSettings};
 
 use std::sync::Arc;
 
@@ -60,6 +61,18 @@ pub fn start(node: NmosNode) {
     tokio::spawn(register::run(node));
 }
 
+/// Create the output domain once. An id clash is returned to the caller.
+pub fn prepare_output_domain(settings: &NmosSettings) -> Result<(), String> {
+    let Some(dir) = &settings.output_domain_dir else {
+        return Ok(());
+    };
+    let id = settings.output_domain_id.ok_or_else(|| {
+        "MXL_OUTPUT_DOMAIN_DIR is set but MXL_OUTPUT_DOMAIN_ID and NMOS_SEED are both unset"
+            .to_string()
+    })?;
+    domain::ensure_output_domain(dir, id, &settings.label, settings.history_duration_ns)
+}
+
 /// Best-effort DELETE of this node from the registry during process shutdown.
 pub async fn shutdown(node: &NmosNode) {
     node.request_shutdown();
@@ -68,6 +81,13 @@ pub async fn shutdown(node: &NmosNode) {
         .build()
         .unwrap_or_default();
     register::unregister(node, &client).await;
+    if node.settings().cleanup_on_exit {
+        if let Some(dir) = &node.settings().output_domain_dir {
+            if let Err(err) = domain::remove_output_domain(dir, &node.settings().scan_path) {
+                tracing::error!("MXL output domain cleanup failed: {err}");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -78,6 +98,8 @@ mod tests {
     use crate::nmos::register::normalize_registry;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use axum::routing::{delete, post};
+    use axum::Router;
     use futures::future::BoxFuture;
     use serde_json::Value;
     use std::path::PathBuf;
@@ -193,6 +215,27 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item == "self/"));
+    }
+
+    #[test]
+    fn seed_ids_are_stable() {
+        use crate::nmos::settings::{node_id_from_seed, output_domain_id_from_seed};
+        let node = node_id_from_seed("sport-sa-strom");
+        assert_eq!(node, node_id_from_seed("sport-sa-strom"));
+        assert_ne!(node, node_id_from_seed("other"));
+        assert_eq!(
+            output_domain_id_from_seed("sport-sa-strom"),
+            output_domain_id_from_seed("sport-sa-strom")
+        );
+    }
+
+    #[test]
+    fn announce_address_rejects_names_and_loopback() {
+        use crate::nmos::require_announce_ipv4;
+        assert!(require_announce_ipv4("192.0.2.10").is_ok());
+        assert!(require_announce_ipv4("strom.local").is_err());
+        assert!(require_announce_ipv4("127.0.0.1").is_err());
+        assert!(require_announce_ipv4("0.0.0.0").is_err());
     }
 
     #[test]
@@ -570,5 +613,72 @@ mod tests {
         assert!(allow_headers
             .split(',')
             .any(|name| name.trim() == "content-type"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_unregisters_the_node_and_removes_its_domain() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let deleted = Arc::new(AtomicBool::new(false));
+        let flag = deleted.clone();
+        let registry = Router::new()
+            .route(
+                "/x-nmos/registration/v1.3/resource",
+                post(|| async { StatusCode::CREATED }),
+            )
+            .route(
+                "/x-nmos/registration/v1.3/resource/{typ}/{id}",
+                delete(move || {
+                    let flag = flag.clone();
+                    async move {
+                        flag.store(true, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            )
+            .route(
+                "/x-nmos/registration/v1.3/health/nodes/{id}",
+                post(|| async { StatusCode::OK }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, registry).await.unwrap();
+        });
+
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("instance");
+        let settings = NmosSettings {
+            enabled: true,
+            dns_sd: false,
+            registry: Some(format!("http://127.0.0.1:{port}")),
+            output_domain_dir: Some(output.clone()),
+            output_domain_id: Some(
+                Uuid::parse_str("3310f209-9351-47c0-b9a2-14c59b6a4c23").unwrap(),
+            ),
+            cleanup_on_exit: true,
+            host: Some("192.0.2.10".to_string()),
+            domain_paths: Vec::new(),
+            scan_path: root.path().to_path_buf(),
+            ..NmosSettings::default()
+        };
+        prepare_output_domain(&settings).unwrap();
+
+        let snapshot: crate::nmos::node::SnapshotFn = Arc::new(|| Box::pin(async { Vec::new() }));
+        let apply: crate::nmos::node::ApplyFn = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let node = NmosNode::new(settings, snapshot, apply);
+        start(node.clone());
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if node.is_registered() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert!(ready.is_ok(), "node did not register");
+        shutdown(&node).await;
+        assert!(deleted.load(Ordering::SeqCst));
+        assert!(!output.exists());
     }
 }

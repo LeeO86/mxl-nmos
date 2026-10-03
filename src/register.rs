@@ -76,6 +76,7 @@ async fn register_once(node: &NmosNode, client: &reqwest::Client) {
         state.candidates.get(state.index).cloned()
     };
     let Some(base) = base else {
+        node.set_registered(false);
         return;
     };
     let published = node.publish();
@@ -101,6 +102,7 @@ async fn register_once(node: &NmosNode, client: &reqwest::Client) {
         }
     }
     if failed {
+        node.set_registered(false);
         advance_registry(node);
         return;
     }
@@ -129,10 +131,12 @@ async fn register_once(node: &NmosNode, client: &reqwest::Client) {
     }
     if let Err(err) = heartbeat(client, &base, node.node_id()).await {
         warn!("NMOS heartbeat failed: {err}");
+        node.set_registered(false);
         advance_registry(node);
         return;
     }
     *node.registered() = registered;
+    node.set_registered(true);
 }
 
 fn refresh_candidates(node: &NmosNode) {
@@ -243,6 +247,10 @@ struct Discovery {
 
 impl Discovery {
     fn start(node: &NmosNode) -> Option<Self> {
+        if !node.settings().dns_sd {
+            info!("NMOS DNS-SD browsing and node advertisement are off");
+            return None;
+        }
         let daemon = match ServiceDaemon::new() {
             Ok(daemon) => daemon,
             Err(err) => {
