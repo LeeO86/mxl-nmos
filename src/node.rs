@@ -257,6 +257,7 @@ impl NmosNode {
         let flows = (self.inner.snapshot)().await;
         let domains = discover_domains(&self.inner.settings);
         let mut model = lock(&self.inner.model);
+        log_domain_changes(&model.domains, &domains);
         model.domains = domains;
         model.sync_flows(&flows);
     }
@@ -1444,6 +1445,32 @@ fn discover_domains(settings: &NmosSettings) -> Vec<MxlDomain> {
     domains.sort_by_key(|domain| domain.id);
     domains.dedup_by_key(|domain| domain.id);
     domains
+}
+
+/// The domain scan runs every second; log only domains that appeared or went away.
+fn log_domain_changes(old: &[MxlDomain], new: &[MxlDomain]) {
+    for domain in new {
+        if !old
+            .iter()
+            .any(|o| o.id == domain.id && o.path == domain.path)
+        {
+            tracing::info!(
+                "NMOS MXL domain {} ({}) at {}",
+                domain.id,
+                domain.name(),
+                domain.path.display()
+            );
+        }
+    }
+    for domain in old {
+        if !new.iter().any(|n| n.id == domain.id) {
+            tracing::info!(
+                "NMOS MXL domain {} at {} is gone",
+                domain.id,
+                domain.path.display()
+            );
+        }
+    }
 }
 
 fn tags_json(tags: &std::collections::HashMap<String, Vec<String>>) -> Value {

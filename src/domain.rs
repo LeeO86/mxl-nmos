@@ -17,6 +17,17 @@ pub struct MxlDomain {
     pub path: PathBuf,
 }
 
+impl MxlDomain {
+    /// The label, or the description when the label is empty.
+    pub fn name(&self) -> &str {
+        if self.label.is_empty() {
+            &self.description
+        } else {
+            &self.label
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DomainDef {
     id: String,
@@ -32,14 +43,10 @@ pub fn scan_domains(paths: &[PathBuf]) -> Vec<MxlDomain> {
     for path in paths {
         match read_domain(path) {
             Ok(Some(domain)) => {
-                tracing::info!(
+                tracing::debug!(
                     "NMOS MXL domain {} ({}) at {}",
                     domain.id,
-                    if domain.label.is_empty() {
-                        domain.description.as_str()
-                    } else {
-                        domain.label.as_str()
-                    },
+                    domain.name(),
                     domain.path.display()
                 );
                 found.push(domain);
