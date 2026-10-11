@@ -247,7 +247,10 @@ impl fmt::Debug for NodeImplementation {
         f.debug_struct("NodeImplementation")
             .field("on_resolve_auto", &self.on_resolve_auto.is_some())
             .field("domains", &self.domains.is_some())
-            .field("on_connections_changed", &self.on_connections_changed.is_some())
+            .field(
+                "on_connections_changed",
+                &self.on_connections_changed.is_some(),
+            )
             .finish()
     }
 }

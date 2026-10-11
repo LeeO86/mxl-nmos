@@ -79,7 +79,11 @@ pub struct ParseTaiError(String);
 
 impl fmt::Display for ParseTaiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "'{}' is not a TAI timestamp <seconds>:<nanoseconds>", self.0)
+        write!(
+            f,
+            "'{}' is not a TAI timestamp <seconds>:<nanoseconds>",
+            self.0
+        )
     }
 }
 

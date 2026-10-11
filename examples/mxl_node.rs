@@ -93,7 +93,11 @@ async fn main() {
     let _ = serving.await;
 }
 
-fn build(node: &Node, domain: &MxlDomain, video_flow_id: uuid::Uuid) -> Result<(), mxl_nmos::Error> {
+fn build(
+    node: &Node,
+    domain: &MxlDomain,
+    video_flow_id: uuid::Uuid,
+) -> Result<(), mxl_nmos::Error> {
     let group = "Example";
     node.insert_device(Device::new("example", "Example").description("mxl-nmos example device"))?;
 

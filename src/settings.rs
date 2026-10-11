@@ -366,7 +366,10 @@ mod tests {
             &[("NMOS_TAGS", r#"{"a":[1]}"#)],
             &[("NMOS_REGISTRY_ADDRESS", "10.0.0.5")],
             &[("NMOS_REGISTRY_PORT", "8010")],
-            &[("NMOS_REGISTRY_ADDRESS", "registry"), ("NMOS_REGISTRY_PORT", "8010")],
+            &[
+                ("NMOS_REGISTRY_ADDRESS", "registry"),
+                ("NMOS_REGISTRY_PORT", "8010"),
+            ],
             &[("NMOS_QUERY_PORT", "x")],
         ] {
             assert!(apply(vars).is_err(), "{vars:?}");

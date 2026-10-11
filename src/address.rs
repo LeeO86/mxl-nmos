@@ -13,7 +13,9 @@ pub fn first_routable_ipv4() -> Option<Ipv4Addr> {
         .filter(|iface| !is_loopback(iface))
         .flat_map(|iface| iface.addr.iter())
         .find_map(|addr| match addr {
-            Addr::V4(v4) if !v4.ip.is_loopback() && !v4.ip.is_unspecified() && !v4.ip.is_link_local() => {
+            Addr::V4(v4)
+                if !v4.ip.is_loopback() && !v4.ip.is_unspecified() && !v4.ip.is_link_local() =>
+            {
                 Some(v4.ip)
             }
             _ => None,

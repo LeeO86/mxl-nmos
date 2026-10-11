@@ -121,7 +121,12 @@ pub(crate) struct Model {
 }
 
 impl Model {
-    pub(crate) fn new(node_id: Uuid, host: Ipv4Addr, hostname: Option<String>, interfaces: Value) -> Self {
+    pub(crate) fn new(
+        node_id: Uuid,
+        host: Ipv4Addr,
+        hostname: Option<String>,
+        interfaces: Value,
+    ) -> Self {
         Self {
             node_id,
             host,
@@ -198,7 +203,11 @@ impl Model {
         Ok(())
     }
 
-    pub(crate) fn insert_receiver(&mut self, receiver: Receiver, now: TaiTime) -> Result<(), Error> {
+    pub(crate) fn insert_receiver(
+        &mut self,
+        receiver: Receiver,
+        now: TaiTime,
+    ) -> Result<(), Error> {
         self.require(ResourceType::Device, &receiver.device_key)?;
         match self.receivers.get_mut(&receiver.key) {
             Some(entry) => {
@@ -248,7 +257,12 @@ impl Model {
     pub(crate) fn erase(&mut self, typ: ResourceType, key: &str) -> Result<(), Error> {
         self.require(typ, key)?;
         match typ {
-            ResourceType::Node => return Err(Error::UnknownResource { typ, key: key.to_string() }),
+            ResourceType::Node => {
+                return Err(Error::UnknownResource {
+                    typ,
+                    key: key.to_string(),
+                })
+            }
             ResourceType::Device => {
                 self.devices.remove(key);
                 let sources: Vec<String> = self
@@ -366,7 +380,15 @@ impl Model {
                 _ => self.version_after(id, now),
             };
             self.last_versions.insert(id, version);
-            next.insert((typ, id), Doc { typ, id, body, version });
+            next.insert(
+                (typ, id),
+                Doc {
+                    typ,
+                    id,
+                    body,
+                    version,
+                },
+            );
         }
         self.docs = next;
     }
@@ -642,7 +664,12 @@ impl Model {
 
     // ---- IS-05 documents --------------------------------------------------
 
-    pub(crate) fn staged_json(&self, role: Role, conn: &ConnectionState, activation: ActivationRecord) -> Value {
+    pub(crate) fn staged_json(
+        &self,
+        role: Role,
+        conn: &ConnectionState,
+        activation: ActivationRecord,
+    ) -> Value {
         let staged = &conn.staged;
         let mut value = json!({
             "master_enable": staged.master_enable,

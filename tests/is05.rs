@@ -180,12 +180,11 @@ async fn a_callback_that_does_not_answer_times_out() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(body["debug"].as_str().unwrap().contains("500 ms"), "{body}");
     assert_eq!(started.elapsed(), Duration::from_millis(500));
-    assert_eq!(
+    assert!(
         h.node
             .active(Role::Sender, "video-out")
             .unwrap()
-            .master_enable,
-        true
+            .master_enable
     );
 }
 

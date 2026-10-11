@@ -12,7 +12,10 @@ use crate::node::Node;
 use crate::settings::normalize_registry;
 
 /// IS-04 v1.3 registration service, and its pre-v1.3 name.
-const REGISTRATION_SERVICES: [&str; 2] = ["_nmos-register._tcp.local.", "_nmos-registration._tcp.local."];
+const REGISTRATION_SERVICES: [&str; 2] = [
+    "_nmos-register._tcp.local.",
+    "_nmos-registration._tcp.local.",
+];
 const NODE_SERVICE: &str = "_nmos-node._tcp.local.";
 
 pub(crate) struct Discovery {
@@ -51,7 +54,11 @@ impl Discovery {
             browsers,
             found: HashMap::new(),
             advertised: None,
-            protocol: if node.settings().https { "https" } else { "http" },
+            protocol: if node.settings().https {
+                "https"
+            } else {
+                "http"
+            },
         })
     }
 

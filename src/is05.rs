@@ -94,9 +94,10 @@ pub(crate) fn parse_patch(role: Role, body: &Value) -> Result<StagePatch, String
                 patch.peer_id = Some(if value.is_null() {
                     None
                 } else {
-                    Some(parse_nmos_uuid(value).ok_or_else(|| {
-                        format!("{peer_field} must be null or a UUID")
-                    })?)
+                    Some(
+                        parse_nmos_uuid(value)
+                            .ok_or_else(|| format!("{peer_field} must be null or a UUID"))?,
+                    )
                 });
             }
             other => return Err(format!("'{other}' is not a staged parameter")),
@@ -167,7 +168,11 @@ fn parse_transport_params(role: Role, value: &Value) -> Result<ParamPair, String
                 flow = Some(param);
             }
             ext if is_ext_name(ext) => {
-                if !(value.is_string() || value.is_boolean() || value.is_null() || value.is_number()) {
+                if !(value.is_string()
+                    || value.is_boolean()
+                    || value.is_null()
+                    || value.is_number())
+                {
                     return Err(format!("{ext} must be a string, boolean, number or null"));
                 }
             }
@@ -261,19 +266,46 @@ mod tests {
         for (role, body) in [
             (Role::Sender, json!([])),
             (Role::Sender, json!({"sender_id": null})),
-            (Role::Sender, json!({"transport_file": {"data": null, "type": null}})),
+            (
+                Role::Sender,
+                json!({"transport_file": {"data": null, "type": null}}),
+            ),
             (Role::Sender, json!({"master_enable": "yes"})),
             (Role::Sender, json!({"activation": {}})),
             (Role::Sender, json!({"activation": {"mode": "now"}})),
-            (Role::Sender, json!({"activation": {"mode": "activate_scheduled_relative"}})),
-            (Role::Sender, json!({"activation": {"mode": null, "activation_time": "1:0"}})),
-            (Role::Sender, json!({"activation": {"mode": "activate_scheduled_absolute", "requested_time": "1.5"}})),
+            (
+                Role::Sender,
+                json!({"activation": {"mode": "activate_scheduled_relative"}}),
+            ),
+            (
+                Role::Sender,
+                json!({"activation": {"mode": null, "activation_time": "1:0"}}),
+            ),
+            (
+                Role::Sender,
+                json!({"activation": {"mode": "activate_scheduled_absolute", "requested_time": "1.5"}}),
+            ),
             (Role::Sender, json!({"transport_params": [{}, {}]})),
-            (Role::Sender, json!({"transport_params": [{"destination_ip": "1.2.3.4"}]})),
-            (Role::Sender, json!({"transport_params": [{"mxl_flow_id": "not-a-uuid"}]})),
-            (Role::Sender, json!({"receiver_id": "ABCDEFAB-1111-4111-8111-111111111111"})),
-            (Role::Receiver, json!({"transport_params": [{"mxl_flow_id": "auto"}]})),
-            (Role::Receiver, json!({"transport_file": {"data": "v=0", "type": "application/sdp"}})),
+            (
+                Role::Sender,
+                json!({"transport_params": [{"destination_ip": "1.2.3.4"}]}),
+            ),
+            (
+                Role::Sender,
+                json!({"transport_params": [{"mxl_flow_id": "not-a-uuid"}]}),
+            ),
+            (
+                Role::Sender,
+                json!({"receiver_id": "ABCDEFAB-1111-4111-8111-111111111111"}),
+            ),
+            (
+                Role::Receiver,
+                json!({"transport_params": [{"mxl_flow_id": "auto"}]}),
+            ),
+            (
+                Role::Receiver,
+                json!({"transport_file": {"data": "v=0", "type": "application/sdp"}}),
+            ),
         ] {
             assert!(parse_patch(role, &body).is_err(), "{role:?} {body}");
         }
@@ -306,13 +338,16 @@ mod tests {
             mxl_domain_id: Some(Param::Id(Uuid::new_v4())),
             ..StagePatch::default()
         };
-        assert!(patch.apply(Role::Sender, &mut staged, std::slice::from_ref(&domain)).is_err());
+        assert!(patch
+            .apply(Role::Sender, &mut staged, std::slice::from_ref(&domain))
+            .is_err());
         assert!(patch.apply(Role::Sender, &mut staged, &[]).is_err());
         let ok = StagePatch {
             mxl_domain_id: Some(Param::Id(domain.id)),
             ..StagePatch::default()
         };
-        ok.apply(Role::Sender, &mut staged, std::slice::from_ref(&domain)).unwrap();
+        ok.apply(Role::Sender, &mut staged, std::slice::from_ref(&domain))
+            .unwrap();
         assert_eq!(staged.mxl_domain_id, Param::Id(domain.id));
     }
 }

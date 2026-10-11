@@ -321,8 +321,16 @@ impl Node {
         }
     }
 
-    fn resolve(&self, model: &mut Model, role: Role, key: &str, domains: &[MxlDomain]) -> Result<(Option<Uuid>, Option<Uuid>), String> {
-        let conn = model.conn(role, key).ok_or_else(|| "not found".to_string())?;
+    fn resolve(
+        &self,
+        model: &mut Model,
+        role: Role,
+        key: &str,
+        domains: &[MxlDomain],
+    ) -> Result<(Option<Uuid>, Option<Uuid>), String> {
+        let conn = model
+            .conn(role, key)
+            .ok_or_else(|| "not found".to_string())?;
         let staged = conn.staged.clone();
         if let Some(resolver) = &self.inner.implementation.on_resolve_auto {
             if staged.mxl_domain_id == Param::Auto || staged.mxl_flow_id == Param::Auto {
@@ -362,8 +370,12 @@ impl Node {
             Param::Null => None,
             Param::Id(id) => Some(id),
             Param::Auto if role == Role::Sender => {
-                let conn = model.conn_mut(role, key).ok_or_else(|| "not found".to_string())?;
-                let id = own_flow.or(conn.generated_flow).unwrap_or_else(Uuid::new_v4);
+                let conn = model
+                    .conn_mut(role, key)
+                    .ok_or_else(|| "not found".to_string())?;
+                let id = own_flow
+                    .or(conn.generated_flow)
+                    .unwrap_or_else(Uuid::new_v4);
                 if own_flow.is_none() {
                     conn.generated_flow = Some(id);
                 }
@@ -375,7 +387,13 @@ impl Node {
     }
 
     /// PATCH `/staged` of one Sender or Receiver.
-    pub(crate) async fn patch_staged(&self, role: Role, id: Uuid, body: &Value, bulk: bool) -> Result<Reply, Reply> {
+    pub(crate) async fn patch_staged(
+        &self,
+        role: Role,
+        id: Uuid,
+        body: &Value,
+        bulk: bool,
+    ) -> Result<Reply, Reply> {
         let patch = parse_patch(role, body).map_err(|e| api_error(400, &e))?;
         let _guard = self.inner.activation_lock.lock().await;
         let domains = self.domains();
@@ -403,12 +421,18 @@ impl Node {
             match patch.activation {
                 None => {
                     let conn = model.conn(role, &key).expect("checked above");
-                    return Ok((200, model.staged_json(role, conn, ActivationRecord::default())));
+                    return Ok((
+                        200,
+                        model.staged_json(role, conn, ActivationRecord::default()),
+                    ));
                 }
                 Some(ActivationRequest::Cancel) => {
                     conn.pending = None;
                     let conn = model.conn(role, &key).expect("checked above");
-                    return Ok((200, model.staged_json(role, conn, ActivationRecord::default())));
+                    return Ok((
+                        200,
+                        model.staged_json(role, conn, ActivationRecord::default()),
+                    ));
                 }
                 Some(ActivationRequest::Absolute(_)) | Some(ActivationRequest::Relative(_)) => {
                     return Ok(self.schedule(&mut model, role, &key, &patch));
@@ -509,7 +533,10 @@ impl Node {
                 return;
             }
             let id = model.id(resource_type(role), &key);
-            let record = model.conn(role, &key).and_then(|c| c.pending).map(|p| p.record);
+            let record = model
+                .conn(role, &key)
+                .and_then(|c| c.pending)
+                .map(|p| p.record);
             match self.resolve(&mut model, role, &key, &domains) {
                 Ok(resolved) => {
                     let conn = model.conn(role, &key).expect("pending");
@@ -695,7 +722,10 @@ impl Node {
             },
             ["x-nmos", "node", "v1.3", "receivers", id, "target"] => {
                 if model.key_for(Role::Receiver, parse_id(id)?).is_some() {
-                    Err(api_error(405, "use the IS-05 Connection API to connect MXL receivers"))
+                    Err(api_error(
+                        405,
+                        "use the IS-05 Connection API to connect MXL receivers",
+                    ))
                 } else {
                     Err(api_error(404, "not found"))
                 }
