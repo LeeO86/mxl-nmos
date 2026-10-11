@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `NMOS_REGISTRY_ADDRESS` and `NMOS_QUERY_ADDRESS` accept a DNS name (for example a
+  Kubernetes Service name) as well as an IPv4 literal. `NMOS_HOST_ADDRESS` stays an
+  IPv4 literal.
+
 ## 0.1.0 - 2026-10-11
 
 First release: the NMOS node of `LeeO86/strom` 1.0.1 as a standalone crate.
