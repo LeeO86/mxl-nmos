@@ -89,16 +89,23 @@ async fn against_the_nmos_cpp_registry() {
     );
     assert!(h.node.is_registered());
 
-    let restart = std::process::Command::new("docker")
-        .args(["restart", "-t", "1", &env.container])
-        .status()
-        .expect("docker restart");
-    assert!(restart.success());
-    wait_for("readiness lost after the registry restart", 20, || {
+    // Registry restart: stopped long enough for a heartbeat to fail, then started
+    // empty. The node must notice and register everything again.
+    let docker = |action: &str| {
+        let status = std::process::Command::new("docker")
+            .args([action, &env.container])
+            .status()
+            .expect("docker");
+        assert!(status.success(), "docker {action}");
+    };
+    docker("stop");
+    wait_for("readiness lost while the registry is down", 20, || {
         !h.node.is_registered()
     })
     .await;
+    docker("start");
     wait_for("ready again", 30, || h.node.is_registered()).await;
+    wait_listed(&env, &format!("nodes/{node}"), 5).await;
     wait_listed(&env, &format!("senders/{}", h.sender_id()), 5).await;
 
     h.node.shutdown(Duration::from_secs(5)).await;
