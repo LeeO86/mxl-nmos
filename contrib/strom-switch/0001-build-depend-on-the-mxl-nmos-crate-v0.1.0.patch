@@ -1,0 +1,174 @@
+From ea7f1cfad5c76e137b660c06afee7c47e46d9599 Mon Sep 17 00:00:00 2001
+From: Adrian Hilber <LeeO86@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 18:28:21 +0000
+Subject: [PATCH 1/4] build: depend on the mxl-nmos crate v0.1.0
+
+The NMOS node moves to LeeO86/mxl-nmos, pinned by its release tag.
+---
+ Cargo.lock         | 45 +++++++++++++++++++++++++++++++++------------
+ backend/Cargo.toml |  2 ++
+ 2 files changed, 35 insertions(+), 12 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 7b20279..c543a03 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -212,7 +212,7 @@ version = "1.1.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
+ dependencies = [
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -223,7 +223,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
+ dependencies = [
+  "anstyle",
+  "once_cell_polyfill",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -263,7 +263,7 @@ dependencies = [
+  "objc2-foundation 0.3.2",
+  "parking_lot",
+  "percent-encoding",
+- "windows-sys 0.60.2",
++ "windows-sys 0.59.0",
+  "x11rb",
+ ]
+ 
+@@ -1929,7 +1929,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+ dependencies = [
+  "libc",
+- "windows-sys 0.52.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -2374,7 +2374,7 @@ dependencies = [
+  "gobject-sys",
+  "libc",
+  "system-deps",
+- "windows-sys 0.52.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -4179,6 +4179,26 @@ dependencies = [
+  "target-features",
+ ]
+ 
++[[package]]
++name = "mxl-nmos"
++version = "0.1.0"
++source = "git+https://github.com/LeeO86/mxl-nmos?tag=v0.1.0#88e04c5330752af0cbeaa05f83f3c54afb56d7a1"
++dependencies = [
++ "axum",
++ "futures",
++ "hostname",
++ "libc",
++ "mdns-sd",
++ "network-interface",
++ "reqwest 0.13.4",
++ "serde",
++ "serde_json",
++ "tokio",
++ "tower-http 0.7.0",
++ "tracing",
++ "uuid",
++]
++
+ [[package]]
+ name = "naga"
+ version = "29.0.3"
+@@ -5337,7 +5357,7 @@ dependencies = [
+  "once_cell",
+  "socket2",
+  "tracing",
+- "windows-sys 0.60.2",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -5835,7 +5855,7 @@ dependencies = [
+  "errno",
+  "libc",
+  "linux-raw-sys 0.12.1",
+- "windows-sys 0.52.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -5894,7 +5914,7 @@ dependencies = [
+  "security-framework",
+  "security-framework-sys",
+  "webpki-root-certs",
+- "windows-sys 0.52.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -6369,7 +6389,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
+ dependencies = [
+  "libc",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -6672,6 +6692,7 @@ dependencies = [
+  "libc",
+  "mdns-sd",
+  "mime_guess",
++ "mxl-nmos",
+  "network-interface",
+  "notify",
+  "nvml-wrapper",
+@@ -6886,7 +6907,7 @@ dependencies = [
+  "getrandom 0.4.2",
+  "once_cell",
+  "rustix 1.1.4",
+- "windows-sys 0.52.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+@@ -7528,7 +7549,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
+ dependencies = [
+  "memoffset",
+  "tempfile",
+- "windows-sys 0.60.2",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -8314,7 +8335,7 @@ version = "0.1.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+ dependencies = [
+- "windows-sys 0.48.0",
++ "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+diff --git a/backend/Cargo.toml b/backend/Cargo.toml
+index 6ffbe1b..c6c62bb 100644
+--- a/backend/Cargo.toml
++++ b/backend/Cargo.toml
+@@ -135,6 +135,8 @@ socket2 = "0.6"      # Multicast socket options for SAP
+ flate2 = "1.1"       # Zlib decompression for SAP
+ mdns-sd = "0.21"     # mDNS service discovery (RAVENNA, NDI, etc.)
+ hostname = "0.4"     # Cross-platform hostname detection
++# NMOS node (IS-04, IS-05, BCP-007-03). Always a release tag, never a branch.
++mxl-nmos = { git = "https://github.com/LeeO86/mxl-nmos", tag = "v0.1.0", features = ["dns-sd"] }
+ 
+ # GUI (native frontend) - use --features no-gui to disable
+ strom-frontend = { path = "../frontend" }
+-- 
+2.43.0
+

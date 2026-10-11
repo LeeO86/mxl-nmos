@@ -1,0 +1,104 @@
+From 77bbb3daccf81fcbbc21e3afbcb812e337008b70 Mon Sep 17 00:00:00 2001
+From: Adrian Hilber <LeeO86@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 18:28:22 +0000
+Subject: [PATCH 4/4] docs: changelog, NMOS guide and plan for the mxl-nmos
+ switch
+
+IMPLEMENTATION_PLAN.md notes that the per-receiver activation callback
+makes the no-restart-on-routing-change fix possible (follow-up).
+---
+ IMPLEMENTATION_PLAN.md | 22 +++++++++++++++++-----
+ docs/CHANGELOG.md      | 20 ++++++++++++++++++++
+ docs/NMOS_MXL.md       |  6 +++++-
+ 3 files changed, 42 insertions(+), 6 deletions(-)
+
+diff --git a/IMPLEMENTATION_PLAN.md b/IMPLEMENTATION_PLAN.md
+index c38fd2f..9ab9957 100644
+--- a/IMPLEMENTATION_PLAN.md
++++ b/IMPLEMENTATION_PLAN.md
+@@ -6,13 +6,13 @@ Audit of this repository against the MXL platform guideline. The code is the sou
+ | --- | --- | --- | --- |
+ | G1 | Env, then file, then defaults. Invalid values exit 78. State under one directory, default `/config` (temp dir only when `/config` cannot be created). Secrets not logged. | met | `backend/src/config.rs` (`apply_platform_env`, `CONFIG_DIR`), `backend/src/main.rs` exit 78, `backend/src/paths.rs` |
+ | G2 | Scan `MXL_DOMAIN_SCAN_PATH` (default `/Volumes/mxl`), including mirrors. Own output domain created once. Do not overwrite a different domain id. `history_duration` configurable. | met | `backend/src/nmos/domain.rs` `scan_domain_root`, `ensure_output_domain` |
+-| G3 | `NMOS_SEED` derives UUIDv5 ids. `NMOS_LABEL` is the node label and device prefix. `NMOS_TAGS` on node and device. Group hints stay. | met | `backend/src/nmos/settings.rs` `node_id_from_seed`, `backend/src/nmos/node.rs` tags and device label |
+-| G4 | Registry address and port. Query address defaults to the registry, query port to registration port + 1. `NMOS_DNS_SD` defaults false and disables browse and advertisement. No Avahi required. | met | `backend/src/nmos/register.rs` `Discovery::start`, `backend/src/config.rs` `query_base_url` |
+-| G5 | Announced NMOS host is an IPv4 literal from `NMOS_HOST_ADDRESS` (alias `STROM_NMOS_HOST`). No hostname, `0.0.0.0`, or `127.0.0.1`. | met | `backend/src/nmos/node.rs` `require_announce_ipv4` |
++| G3 | `NMOS_SEED` derives UUIDv5 ids. `NMOS_LABEL` is the node label and device prefix. `NMOS_TAGS` on node and device. Group hints stay. | met | `mxl-nmos` `ids` (Strom's namespace and formulas), tags and device label; `backend/src/nmos/glue.rs` keys |
++| G4 | Registry address and port. Query address defaults to the registry, query port to registration port + 1. `NMOS_DNS_SD` defaults false and disables browse and advertisement. No Avahi required. | met | `mxl-nmos` (registration, `dns-sd` feature), `backend/src/config.rs` `query_base_url` |
++| G5 | Announced NMOS host is an IPv4 literal from `NMOS_HOST_ADDRESS` (alias `STROM_NMOS_HOST`). No hostname, `0.0.0.0`, or `127.0.0.1`. | met | `backend/src/nmos/mod.rs` `require_announce_ipv4` (`mxl-nmos`) |
+ | G6 | One configurable HTTP port (`PORT`, aliases `NMOS_PORT`, `STROM_PORT`, `STROM_SERVER_PORT`). Bind failure exits 75. | met | `backend/src/config.rs` `agreed_listen_port`, `backend/src/main.rs` `ensure_port_free` |
+-| G7 | `/livez`, `/readyz` (registered when a registry is set), `/metrics` with `strom_` prefix. | met | `backend/src/api/platform.rs` |
++| G7 | `/livez`, `/readyz` (registered and listed by the Query API when a registry is set), `/metrics` with `strom_` prefix. | met | `backend/src/api/platform.rs`, `mxl-nmos` `Node::is_registered` |
+ | G8 | SIGTERM stops flows, DELETEs the node, optionally removes the output domain, exits 143 within `SHUTDOWN_TIMEOUT_S`. | met | `backend/src/main.rs` signal task, `backend/src/nmos/mod.rs` `shutdown` |
+-| G9 | IS-05 BCP-007-03 parameters and `master_enable: false`. Active connection is the saved flow, so it survives a restart. | met | `backend/src/nmos/node.rs`, `backend/src/state/mod.rs` `apply_nmos_mxl` |
++| G9 | IS-05 BCP-007-03 parameters and `master_enable: false`. Active connection is the saved flow, so it survives a restart. | met | `mxl-nmos`, `backend/src/nmos/glue.rs`, `backend/src/state/mod.rs` `apply_nmos_mxl` |
+ | G10 | `GET/POST /api/v1/config/export` and `/import`. Secrets omitted. Existing `/api` routes stay. | met | `backend/src/api/platform.rs` |
+ | G11 | GHCR tags `git-<sha7>` and `nightly-dev` on main; `X.Y.Z`, `X.Y`, `X` on `vX.Y.Z`. No moving `:mxl` tag. Image uid 1000. OCI labels including `io.dmf.mxl.revision`. | met | `.github/workflows/ci.yml`, `Dockerfile` |
+ | G12 | `deploy/strom.yaml` shows pod network, probes, MXL hostPath, `/config`, no hostIPC. | met | `deploy/strom.yaml` |
+@@ -24,3 +24,15 @@ N/A:
+ - A separate NMOS WebSocket on `NMOS_PORT+1`. Strom is a Node, not a registry, and serves IS-04/IS-05 HTTP on the same port as the web UI.
+ - JSON config file. The existing file is `.strom.toml`. Replacing it would drop deployed files. Environment variables are the platform contract.
+ - Announcing ICE or SRT from `NMOS_HOST_ADDRESS`. Those addresses are the block properties the operator set. The address Strom itself publishes for the node is `NMOS_HOST_ADDRESS`.
++
++## NMOS node: the `mxl-nmos` crate
++
++The NMOS node is the shared crate `LeeO86/mxl-nmos` (a release tag in
++`backend/Cargo.toml`). `backend/src/nmos/glue.rs` maps flows to its resources and
++keeps the activation handler, which still restarts the whole flow.
++
++Follow-up (not done): the crate calls the activation handler for one sender or
++receiver at a time and never restarts anything itself. That makes the fix for
++"a connection change restarts the whole flow" possible: apply the new
++`mxl_domain_id` / `mxl_flow_id` to the one MXL block (for example by rebuilding
++only that block's elements) instead of stopping and starting the flow.
+diff --git a/docs/CHANGELOG.md b/docs/CHANGELOG.md
+index 2d45059..ecf9491 100644
+--- a/docs/CHANGELOG.md
++++ b/docs/CHANGELOG.md
+@@ -2,6 +2,26 @@
+ 
+ All notable changes to the Strom GStreamer Flow Engine project.
+ 
++## [Unreleased]
++
++### Changed
++- The NMOS node is now the shared crate [`mxl-nmos`](https://github.com/LeeO86/mxl-nmos) 0.1.0. Strom keeps the glue: flows with MXL blocks become Devices, output blocks Source + Flow + Sender, input blocks Receivers, and an activation still restarts the flow. Ids, labels, settings, readiness wiring, shutdown and export/import are unchanged.
++- `/readyz` now also needs the Query API (`NMOS_QUERY_ADDRESS` / `NMOS_QUERY_PORT`, default registry address and port + 1) to list the node.
++- IS-04 `version` and IS-05 `activation_time` are TAI (`CLOCK_TAI`), no longer UTC; versions strictly increase and change on every activation. The host's kernel TAI offset must be set (37 s).
++- An IS-05 activation waits up to 30 s for the flow restart, then answers 500.
++- The Node `href` is the API base URL; Devices list the Connection API in `controls`; audio Sources carry `channels` (moved from the audio Flow, where IS-04 has no such field); bulk results carry `error` and `debug`.
++- After an activation, `/staged` keeps `auto` as staged; `/active` shows the resolved ids.
++- With `NMOS_DNS_SD=true` the node also browses `_nmos-register._tcp` (IS-04 v1.3) and advertises itself only while no registry is known, with `api_auth`.
++
++### Added
++- Scheduled IS-05 activations (absolute and relative, TAI); they answered 400 before.
++- CI job `nmos-amwa`: AMWA BCP-007-03-01 against Strom with an nmos-cpp registry (`scripts/nmos-amwa/`).
++
++### Fixed
++- After a heartbeat 404 (registry restart) the node registers again; before, it stayed unregistered.
++- Shutdown deletes every NMOS resource, the Node last, on the IS-04 paths (`/resource/nodes/{id}`); before, the DELETE went to `/resource/node/{id}`, the registry answered 404 and nothing was removed.
++- Registration failures back off (1 s doubling to 10 s).
++
+ ## [1.0.1] - 2026-10-05
+ 
+ ### Fixed
+diff --git a/docs/NMOS_MXL.md b/docs/NMOS_MXL.md
+index f509062..69f866c 100644
+--- a/docs/NMOS_MXL.md
++++ b/docs/NMOS_MXL.md
+@@ -49,7 +49,11 @@ Docker usually blocks mDNS. Set `registry` explicitly. `--network host` is what
+ 
+ ## Activation
+ 
+-An immediate IS-05 activation with `master_enable: true` writes the domain path and flow id onto the block and starts that Strom flow. `master_enable: false` stops the flow so the MXL writer or reader is destroyed. Changing the connection restarts the whole flow, including anything else in it.
++The node is the [`mxl-nmos`](https://github.com/LeeO86/mxl-nmos) crate; Strom maps its flows to the crate's resources.
++
++An IS-05 activation with `master_enable: true` writes the domain path and flow id onto the block and starts that Strom flow. `master_enable: false` stops the flow so the MXL writer or reader is destroyed. Changing the connection restarts the whole flow, including anything else in it. The activation answers once the flow has restarted, or 500 after 30 s.
++
++Activations can be immediate or scheduled (`activate_scheduled_absolute` / `activate_scheduled_relative`). Scheduled times are TAI and compared with `CLOCK_TAI`, so the host's kernel TAI offset must be set (37 s; `chronyd` with `leapsectz right/UTC` sets it). While a scheduled activation is pending, `/staged` answers 423 until the activation ran or a PATCH with `activation.mode: null` cancelled it.
+ 
+ Senders accept `auto` for both parameters. With one visible domain, `auto` selects it. Receivers accept `auto` for the domain only, and reject `auto` for the flow id.
+ 
+-- 
+2.43.0
+
