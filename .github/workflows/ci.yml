@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.97.1"
+  # AMWA nmos-testing, installed from source (no Docker Hub).
+  NMOS_TESTING_REF: 90018513758e6fbc096c26d7ef001f700b28b510
+  # nmos-cpp registry through Google's Docker Hub mirror (no login, no rate limit).
+  NMOS_REGISTRY_IMAGE: mirror.gcr.io/rhastie/nmos-cpp@sha256:c54c8ded3b61740dbd579c03892b0229842250417aa397d87a92e2b91ba645b8
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: LF line endings
+        run: |
+          if git ls-files -z | xargs -0 grep -lI $'\r' ; then
+            echo "::error::files with CRLF line endings"; exit 1
+          fi
+
+  licenses:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - run: cargo test --all-features
+
+  registry:
+    name: nmos-cpp registry
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - run: ci/registry-it.sh
+        env:
+          IT_ARTIFACTS: ${{ runner.temp }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: registry-it
+          path: ${{ runner.temp }}/registry-it.log
+          if-no-files-found: ignore
+
+  amwa:
+    name: AMWA nmos-testing (DNS-SD ${{ matrix.dns_sd }})
+    strategy:
+      fail-fast: false
+      matrix:
+        dns_sd: ["off", "on"]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: amwa-${{ matrix.dns_sd }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Kernel TAI offset (the tool computes TAI as UTC + 37 s)
+        run: sudo ci/set-tai-offset.py 37
+      - name: nmos-testing ${{ env.NMOS_TESTING_REF }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/nmos-testing"
+          curl -fsSL "https://codeload.github.com/AMWA-TV/nmos-testing/tar.gz/$NMOS_TESTING_REF" |
+            tar xz -C "$RUNNER_TEMP/nmos-testing" --strip-components=1
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check -r "$RUNNER_TEMP/nmos-testing/requirements.txt"
+      - name: Build the example node
+        run: |
+          if [ "${{ matrix.dns_sd }}" = on ]; then features="--features dns-sd"; fi
+          cargo build --example mxl_node $features
+      - name: ci/amwa.sh ${{ matrix.dns_sd }}
+        run: ci/amwa.sh ${{ matrix.dns_sd }} target/debug/examples/mxl_node
+        env:
+          NMOS_TESTING_DIR: ${{ runner.temp }}/nmos-testing
+          NMOS_TESTING_PYTHON: ${{ runner.temp }}/venv/bin/python
+          AMWA_OUT: ${{ runner.temp }}/amwa
+      - name: Summary
+        if: always()
+        run: cat "$RUNNER_TEMP/amwa/summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: amwa-${{ matrix.dns_sd }}
+          path: ${{ runner.temp }}/amwa

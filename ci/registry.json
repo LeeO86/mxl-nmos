@@ -1,0 +1,16 @@
+{
+  "label": "mxl-nmos-ci-registry",
+  "logging_level": 0,
+  "pri": 100,
+  "registration_port": 8010,
+  "query_port": 8011,
+  "query_ws_port": 8012,
+  "node_port": 8013,
+  "system_port": 8014,
+  "settings_port": 8015,
+  "logging_port": 8016,
+  "admin_port": 8017,
+  "mdns_port": 8018,
+  "schemas_port": 8019,
+  "registration_expiry_interval": 12
+}
