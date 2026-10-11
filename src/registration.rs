@@ -109,7 +109,7 @@ pub(crate) async fn run(node: Node) {
                     warn!("NMOS registry update at {base} failed: {err}");
                     reset(&node);
                     heartbeat_ok = false;
-                    retry_at = Instant::now();
+                    retry_at = after_failure(&node, &mut backoff);
                 } else if now >= next_heartbeat {
                     match heartbeat(&client, &base, node.node_id()).await {
                         Ok(()) => {
@@ -124,7 +124,10 @@ pub(crate) async fn run(node: Node) {
                             }
                         }
                         Err(RegistryError::NotFound) => {
-                            warn!("NMOS registry {base} does not know node {}; registering again", node.node_id());
+                            warn!(
+                                "NMOS registry {base} does not know node {}; registering again",
+                                node.node_id()
+                            );
                             reset(&node);
                             heartbeat_ok = false;
                             query_ok = false;
@@ -173,7 +176,10 @@ fn after_failure(node: &Node, backoff: &mut Duration) -> Instant {
         let count = state.candidates.len();
         if count > 1 {
             state.index = (state.index + 1) % count;
-            info!("NMOS registration failing over to {}", state.candidates[state.index]);
+            info!(
+                "NMOS registration failing over to {}",
+                state.candidates[state.index]
+            );
         }
         count <= 1 || state.index == 0
     };
@@ -225,7 +231,11 @@ fn refresh_candidates(node: &Node) {
     }
 }
 
-async fn register_all(node: &Node, client: &reqwest::Client, base: &str) -> Result<(), RegistryError> {
+async fn register_all(
+    node: &Node,
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<(), RegistryError> {
     reset(node);
     let docs = node.docs();
     let Some(node_doc) = docs.iter().find(|d| d.typ == ResourceType::Node) else {
@@ -235,21 +245,34 @@ async fn register_all(node: &Node, client: &reqwest::Client, base: &str) -> Resu
         // The registry still holds an earlier registration of this node: remove it
         // and register afresh (IS-04 "Node encounters HTTP 200 on first
         // registration").
-        info!("NMOS registry {base} already held node {}; re-registering", node_doc.id);
+        info!(
+            "NMOS registry {base} already held node {}; re-registering",
+            node_doc.id
+        );
         delete(client, base, ResourceType::Node, node_doc.id).await?;
         post(client, base, node_doc).await?;
     }
     {
         let mut state = lock(&node.inner.registration);
-        state.registered.insert((node_doc.typ, node_doc.id), node_doc.version);
+        state
+            .registered
+            .insert((node_doc.typ, node_doc.id), node_doc.version);
         state.node_registered = true;
     }
-    sync_changes(node, client, base).await
+    let synced = sync_changes(node, client, base).await;
+    if synced.is_err() {
+        reset(node);
+    }
+    synced
 }
 
 /// POST every document whose version the registry does not have yet, in
 /// registration order, and DELETE what is gone, in reverse order.
-async fn sync_changes(node: &Node, client: &reqwest::Client, base: &str) -> Result<(), RegistryError> {
+async fn sync_changes(
+    node: &Node,
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<(), RegistryError> {
     let docs = node.docs();
     let registered = lock(&node.inner.registration).registered.clone();
     for doc in &docs {
@@ -323,8 +346,16 @@ async fn post(client: &reqwest::Client, base: &str, doc: &Doc) -> Result<u16, Re
     }
 }
 
-async fn delete(client: &reqwest::Client, base: &str, typ: ResourceType, id: Uuid) -> Result<(), RegistryError> {
-    let url = format!("{base}/x-nmos/registration/v1.3/resource/{}s/{id}", typ.name());
+async fn delete(
+    client: &reqwest::Client,
+    base: &str,
+    typ: ResourceType,
+    id: Uuid,
+) -> Result<(), RegistryError> {
+    let url = format!(
+        "{base}/x-nmos/registration/v1.3/resource/{}s/{id}",
+        typ.name()
+    );
     let response = client
         .delete(&url)
         .header(ACCEPT, "application/json")
@@ -335,11 +366,18 @@ async fn delete(client: &reqwest::Client, base: &str, typ: ResourceType, id: Uui
     if status.is_success() || status.as_u16() == 404 {
         Ok(())
     } else {
-        Err(RegistryError::Other(format!("DELETE {} {id}: HTTP {status}", typ.name())))
+        Err(RegistryError::Other(format!(
+            "DELETE {} {id}: HTTP {status}",
+            typ.name()
+        )))
     }
 }
 
-async fn heartbeat(client: &reqwest::Client, base: &str, node_id: Uuid) -> Result<(), RegistryError> {
+async fn heartbeat(
+    client: &reqwest::Client,
+    base: &str,
+    node_id: Uuid,
+) -> Result<(), RegistryError> {
     let url = format!("{base}/x-nmos/registration/v1.3/health/nodes/{node_id}");
     let response = client
         .post(&url)
@@ -366,10 +404,18 @@ async fn query_lists_node(node: &Node, client: &reqwest::Client) -> bool {
         query.trim_end_matches('/'),
         node.node_id()
     );
-    match client.get(&url).header(ACCEPT, "application/json").send().await {
+    match client
+        .get(&url)
+        .header(ACCEPT, "application/json")
+        .send()
+        .await
+    {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
-            warn!("NMOS Query API {query} does not list the node yet: HTTP {}", response.status());
+            warn!(
+                "NMOS Query API {query} does not list the node yet: HTTP {}",
+                response.status()
+            );
             false
         }
         Err(err) => {
