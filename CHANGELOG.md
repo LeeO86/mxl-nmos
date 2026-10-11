@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.1.0)
+## 0.1.0 - 2026-10-11
 
 First release: the NMOS node of `LeeO86/strom` 1.0.1 as a standalone crate.
 
