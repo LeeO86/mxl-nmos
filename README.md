@@ -18,9 +18,9 @@ Depend on a release tag, never on a branch:
 
 ```toml
 [dependencies]
-mxl-nmos = { git = "https://github.com/LeeO86/mxl-nmos", tag = "v0.1.0" }
+mxl-nmos = { git = "https://github.com/LeeO86/mxl-nmos", tag = "v0.1.1" }
 # DNS-SD (mDNS) registry browsing and node advertisement, off by default:
-# mxl-nmos = { git = "…", tag = "v0.1.0", features = ["dns-sd"] }
+# mxl-nmos = { git = "…", tag = "v0.1.1", features = ["dns-sd"] }
 ```
 
 The API follows the nmos-cpp nodes of the sibling media functions: one call per
