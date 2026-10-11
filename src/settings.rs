@@ -27,8 +27,8 @@ pub struct Settings {
     /// `NMOS_HOST_ADDRESS`: the address announced in `href` and `api.endpoints`.
     /// Unset: the first non-loopback IPv4 address of this host.
     pub host: Option<Ipv4Addr>,
-    /// `NMOS_PORT`: the port announced, and the port [`crate::Node::serve`] binds
-    /// when the application does not choose one.
+    /// `NMOS_PORT`: the port announced. The application binds it with
+    /// [`crate::Node::bind`] or serves [`crate::Node::router`] on it.
     pub port: u16,
     /// Announce `https` instead of `http`.
     pub https: bool,
