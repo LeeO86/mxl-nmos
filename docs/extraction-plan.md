@@ -1,7 +1,7 @@
 # Extraction plan: Strom's NMOS node → `mxl-nmos`
 
-Status: proposal, waiting for the maintainer's answers to the open questions (§10).
-Nothing is extracted until those are answered.
+Status: agreed. The maintainer answered the open questions on 2026-10-11 (§10); this
+document reflects those answers.
 
 Source revision: `LeeO86/strom` `main` at `c2e27a6` (release 1.0.1).
 
@@ -60,7 +60,7 @@ Source revision: `LeeO86/strom` `main` at `c2e27a6` (release 1.0.1).
 | `nmos/http.rs` | `src/http.rs` | Router, CORS layer, own listener. |
 | `nmos/register.rs` | `src/registration.rs`, `src/dns_sd.rs` | mDNS part behind feature `dns-sd`. |
 | `nmos/settings.rs` | `src/settings.rs` | Without Strom defaults (`label = "Strom"`, port 8080). Plus the env helper (from `config.rs`). |
-| `nmos/domain.rs` | `src/domain.rs` | Filesystem only: `domain_def.json` scan, mirrors, output domain create/remove (G2). See Q6. |
+| `nmos/domain.rs` | stays in Strom | G2 domain files are each application's job (Q6). The crate only receives the list of visible domains (id, label, path) from the application. |
 | `nmos/mod.rs` tests | `tests/` of the crate | Re-written against the neutral API. The Strom copies stay in Strom (§8). |
 | `config.rs`: `parse_tags`, `registry_url`, `query_base_url`, `parse_bool_env`, `require_announce_ipv4`, `first_routable_ipv4` | `src/settings.rs`, `src/address.rs` | The platform env names (G1/G3/G4/G5). Strom keeps its `STROM_*` aliases and `.strom.toml` layering and fills the struct itself. |
 | `network.rs` (interface discovery) | `src/address.rs` (small subset) | Only what `interfaces[]` and the announce address need. |
@@ -72,8 +72,11 @@ What **stays in Strom** (the glue, ~250 lines expected):
 - the fixed formats Strom announces today (1080p50 v210, 2-ch float32) and the receiver
   caps, now passed in as data;
 - the periodic sync (every 1 s, as today) from the flow list to the crate's
-  add/update/remove calls, and the "seed staged/active from block properties until the
+  insert/erase calls, and the "seed staged/active from block properties until the
   first IS-05 patch" rule;
+- `domain.rs` (domain scan, output domain create/remove, seed-derived output domain id)
+  and the `auto` rules that need the filesystem (preferred domain path, the domain that
+  holds `{flow}.mxl-flow`), passed to the crate as its domain list and `on_resolve_auto`;
 - the activation handler `apply_nmos_mxl` (writes domain path and flow id onto the block
   and **restarts the flow**, unchanged);
 - `/readyz`, `/metrics`, export/import, SIGTERM handling, `STROM_*` aliases.
@@ -89,13 +92,13 @@ proposal is in the last column and needs your OK (Q1).
 | Scheduled activations | Rejected with 400 "not implemented" | Relative and absolute, TAI | Implement. Strom gains them; requests that failed before now succeed. |
 | Timestamps | `tai_now()` is UTC (`SystemTime`), 37 s behind TAI | CLOCK_TAI | Use CLOCK_TAI on Linux. Strom's `version` / `activation_time` values move +37 s (a correction). On non-Linux builds (Strom ships Windows/macOS binaries): UTC + 37 s. |
 | `version` | Can repeat within the same ns | Strictly increasing per resource | `max(now, last + 1 ns)`. |
-| Activation callback | Awaited without timeout; error → 500 | Async with timeout, accept/reject | Timeout configurable (default 2 s). Strom sets a long timeout (Q2) because its handler restarts a flow. Reject or timeout → 500 with the reason in `debug`, `active` unchanged. |
+| Activation callback | Awaited without timeout; error → 500 | Async with timeout, accept/reject | Timeout configurable (default 2 s). Strom sets 30 s (Q2) because its handler restarts a flow. Reject or timeout → 500 with the reason in `debug`, `active` unchanged. |
 | `master_enable: false` | Callback only when the flow is running | Normal activation | Always call the callback; Strom's handler already does nothing for a stopped flow, so Strom's result is the same. |
 | Re-registration | After a heartbeat 404 the stale "already registered" map is kept, so nothing is re-posted (bug) | Re-register everything in order after a 404 | Clear the map on 404 and re-register Node → Device → Source → Flow → Sender/Receiver. |
 | Backoff | Fixed: retry at the next 5 s heartbeat | Backoff | Exponential, 1 s doubling to a 10 s cap, reset on success. |
 | Deregistration | DELETE of the Node only | DELETE of every resource, reverse order, Node last, within a timeout | Implement; `shutdown(timeout)`. |
-| Readiness | Registration POST + heartbeat OK. `query_base` is computed in `config.rs` but never used | Query API check | `is_registered()` = heartbeat OK **and** the Query API lists the node, when a Query base is set. Strom passes its `query_base` (stricter readiness) or `None` (today's readiness) — Q3. |
-| Node `hostname` | Container hostname (= pod name) | G5: never announce a hostname or pod name | Omit the optional `hostname` field (Q4). |
+| Readiness | Registration POST + heartbeat OK. `query_base` is computed in `config.rs` but never used | Query API check | `is_registered()` = heartbeat OK **and** the Query API lists the node, when a Query base is set. Strom passes its `query_base`, so its readiness becomes stricter (Q3). |
+| Node `hostname` | Container hostname (= pod name) | G5: never announce a hostname or pod name | **Kept** (Q4): the nmos-cpp siblings announce the system hostname there too (nmos-cpp's `host_name` default); addresses (`href`, `api.endpoints`) stay IP literals. |
 | Audio Source | No `channels` (required by IS-04 v1.3 `source_audio.json`) | Schema-valid resources | Add `channels` from the flow's channel labels. |
 | mDNS advertisement | No `api_auth` TXT record (required for v1.3) | — (DNS-SD job SHOULD pass) | Add `api_auth=false` in the `dns-sd` feature. |
 | Bulk | Per-entry codes, no `error`/`debug` | Per-entry results, documented | Keep per-entry (one reject fails only that entry); add `error` and `debug` per entry, as the IS-05 bulk response schema allows. |
@@ -105,9 +108,12 @@ Unchanged for Strom: ids, labels, descriptions, tags, group hints, routes under
 `auto` rules, MAC `port_id`, receiver caps with `version: "0:0"`, settings and their
 defaults, output domain files, export/import, exit codes.
 
-## 5. Proposed public API
+## 5. Public API
 
-Names are proposals; rustdoc on every public item.
+Shaped like the nmos-cpp nodes of the sibling repos (Q5): one resource per call, as
+`nmos::make_device` / `make_*_source` / `make_*_flow` / `make_sender` /
+`make_receiver` + `insert_resource`, and the callbacks set on a builder as in
+`nmos::experimental::node_implementation()`. Rustdoc on every public item.
 
 ### 5.1 Settings
 
@@ -123,64 +129,72 @@ pub struct Settings {
     pub port: u16,                        // NMOS_PORT; the port announced (and bound by `serve`)
     pub https: bool,
     pub registration: bool,               // register at all (Strom: NMOS_ENABLED)
-    pub registry: Option<SocketAddrV4>,   // NMOS_REGISTRY_ADDRESS / _PORT
-    pub query: Option<SocketAddrV4>,      // NMOS_QUERY_ADDRESS / _PORT (default registry, port + 1)
+    pub registry: Option<String>,         // base URL, from NMOS_REGISTRY_ADDRESS / _PORT
+    pub query: Option<String>,            // base URL, NMOS_QUERY_ADDRESS / _PORT (default registry, port + 1)
     pub dns_sd: bool,                     // NMOS_DNS_SD, default false; needs feature `dns-sd`
+    pub service_name_prefix: String,      // mDNS instance name prefix (Strom: "strom")
     pub heartbeat: Duration,              // 5 s
-    pub activation_timeout: Duration,     // 2 s
-    pub domains: DomainScan,              // which directories hold MXL domains (§5.5)
+    pub activation_timeout: Duration,     // 2 s (Strom: 30 s)
 }
 
 impl Settings {
     /// Apply the platform env names on top of `self`; returns the names that were set
-    /// (so an app can show each setting's origin). Invalid values → Err (app exits 78).
+    /// (so an app can show each setting's origin). Invalid values -> Err (app exits 78).
     pub fn apply_env(&mut self) -> Result<Vec<&'static str>, SettingsError>;
 }
 ```
 
-Strom keeps its own config chain and fills `Settings` itself. `registry` stays a URL
-internally so Strom's legacy `STROM_NMOS_REGISTRY` (full URL) keeps working.
+Strom keeps its own config chain and fills `Settings` itself. The registry is a base
+URL so Strom's legacy `STROM_NMOS_REGISTRY` (full URL) keeps working.
 
-### 5.2 Node and resources
+### 5.2 Implementation callbacks
 
 ```rust
-let node = Node::new(settings, handler)?;          // Err if the announce address is invalid
-
-node.add_device(DeviceSpec { key, name, description })?;
-node.add_sender(SenderSpec {                        // creates Source + Flow + Sender
-    key, device_key, label, description, group_hint,
-    format: FlowFormat::Video { media_type, width, height, grain_rate, interlace, colorspace, components }
-          | FlowFormat::Audio { media_type, sample_rate, channels /* labels */, bit_depth }
-          | FlowFormat::Data  { media_type /* video/smpte291 */, grain_rate },
-    mxl_flow_id: Option<Uuid>,                      // what `auto` resolves to; may differ from the IS-04 Flow id
-    default_domain: Option<DomainRef>,              // what `auto` resolves to (id or path)
-})?;
-node.add_receiver(ReceiverSpec {
-    key, device_key, label, description, group_hint, format: Format,
-    caps: ReceiverCaps { media_types, constraint_sets, version }, // BCP-004-01
-    default_domain: Option<DomainRef>,
-})?;
-node.update_sender(..) / node.update_receiver(..) / node.update_device(..)  // bump versions
-node.remove_sender(key) / node.remove_receiver(key) / node.remove_device(key)
-node.set_active(key, ActiveState { master_enable, mxl_domain_id, mxl_flow_id, peer_id })
-                                                    // app-side state change, no callback
+let implementation = NodeImplementation::new(on_activation)  // required, §5.4
+    .on_resolve_auto(resolver)        // optional; default: §5.5
+    .domains(provider)                // Fn() -> Vec<MxlDomain { id, label, path }>
+    .on_connections_changed(saver);   // optional persistence hook, §5.6
+let node = Node::new(settings, implementation)?;  // Err if the announce address is invalid
 ```
 
-Every change bumps the affected resources' `version` and is pushed to the registry
-by the registration task (as Strom's 1 s sync loop does today).
+The domain provider is called on each request and each registration tick (Strom
+rescans on each request today). The crate reads no files; scanning `domain_def.json`
+stays in the application (Q6).
 
-### 5.3 Identity
+### 5.3 Resources
+
+```rust
+node.insert_device(Device::new(key, name))?;                       // label = "{NMOS_LABEL} {name}", NMOS_TAGS added
+node.insert_source(Source::video(key, device_key, grain_rate))?;   // ::audio(.., channels), ::data(..)
+node.insert_flow(Flow::coded_video(key, source_key, device_key, VideoFormat { .. }))?;
+node.insert_flow(Flow::audio(key, source_key, device_key, media_type, sample_rate, bit_depth))?;
+node.insert_flow(Flow::data(key, source_key, device_key, media_type, grain_rate))?;
+node.insert_sender(Sender::mxl(key, flow_key, device_key))?;       // .mxl_flow_id(id).mxl_domain_id(id)
+node.insert_receiver(Receiver::mxl(key, device_key, Format::Audio, media_types))?; // .caps(constraint_sets, version)
+node.erase(ResourceType::Sender, key)?;                            // dependants are erased too
+node.set_staged(Role::Receiver, key, Connection { .. })?;          // app-side state, no callback
+node.set_active(Role::Receiver, key, Connection { .. })?;
+```
+
+- Every resource has public `label`, `description` and `tags` (with a
+  `group_hint(group, role)` helper, as `nmos::make_group_hint`).
+- `insert_*` with an existing key replaces the resource and bumps its `version`.
+  References (device, source, flow) must exist, so the registry never sees an orphan.
+- `mxl_flow_id` / `mxl_domain_id` on a sender are what `auto` resolves to; the MXL flow
+  id may differ from the IS-04 Flow id (BCP-007-03).
+- Changes are pushed to the registry by the registration task.
+
+### 5.4 Identity
 
 - `node_id = UUIDv5(NAMESPACE, seed)`, with Strom's namespace constant
   `8c76aff5-a8f9-53ce-97d0-766f1074b699` (= `UUIDv5(NAMESPACE_OID, "leeo86.strom.nmos.v1")`).
   Keeping it keeps every Strom id; the mixer uses the same derivation with its own seed.
 - `device = UUIDv5(node_id, "device:{key}")`, `source|flow|sender|receiver =
   UUIDv5(node_id, "{role}:{key}")`, exactly Strom's formulas.
-- Public helper `ids::derive(seed, key) -> Uuid` and `domain::output_domain_id(seed)`
-  (Strom's `"{seed}/mxl-output-domain"`), so apps derive stable MXL flow and domain ids
-  the same way (mixer spec §4.3).
+- `NAMESPACE` and `derive_id(seed, key)` are public, so an application can derive other
+  stable ids (MXL flow ids, its output domain id) the same way.
 
-### 5.4 Activation callback
+### 5.5 Activation callback
 
 ```rust
 pub type ActivationHandler =
@@ -192,7 +206,7 @@ pub struct Activation {
     pub nmos_id: Uuid,
     pub master_enable: bool,
     pub mxl_domain_id: Option<Uuid>,
-    pub domain_path: Option<PathBuf>,  // the domain's directory, when the crate knows it
+    pub domain_path: Option<PathBuf>,  // from the application's domain list
     pub mxl_flow_id: Option<Uuid>,
     pub peer_id: Option<Uuid>,  // sender_id / receiver_id from the PATCH
     pub cause: Cause,           // Immediate | Scheduled | Bulk | Restore
@@ -204,41 +218,32 @@ pub struct Rejected(pub String);
 - `Ok` = the application took the parameters (not "the flow is open"). The crate then
   updates `active`, the IS-04 `subscription` and `version`. Never blocks on media; the
   receiver's `waiting` state is the app's business.
-- `Err(Rejected)` or the timeout → 500 with the reason, `active` unchanged. On timeout
+- `Err(Rejected)` or the timeout -> 500 with the reason, `active` unchanged. On timeout
   the future is dropped.
 - Scheduled: the PATCH returns 202 at once; a TAI timer task calls the callback at the
   activation time; `staged` is locked (423) until then except for a PATCH that cancels
   it with `activation.mode: null`.
-
-### 5.5 MXL domains (filesystem only, no SDK)
-
-```rust
-pub enum DomainScan { Off, Dirs { paths: Vec<PathBuf>, scan_root: Option<PathBuf>, output_dir: Option<PathBuf> } }
-node.set_domains(Vec<MxlDomain>)            // when the app scans itself
-domain::scan_root(&Path) -> Vec<MxlDomain> // children with domain_def.json, mirror-* included
-domain::ensure_output_domain(dir, id, label, description, history_ns) -> Result<()>
-domain::remove_output_domain(dir, scan_root) -> Result<()>
-```
-
-The domain list feeds the `constraints` enum, `mxl_domain_id` validation and `auto`
-resolution, as in Strom (rescanned on each request and each sync tick).
+- `auto` default resolution: a sender's `mxl_flow_id` / `mxl_domain_id` (a sender
+  without a configured flow id gets a random one once, as Strom does); otherwise the
+  only visible domain; receivers reject `auto` for `mxl_flow_id`. `on_resolve_auto`
+  replaces this (Strom: preferred domain path, then the domain holding the flow).
 
 ### 5.6 Serving, registration, shutdown, persistence
 
 ```rust
 node.router() -> axum::Router            // routes under /x-nmos, CORS included; merge into your server
-node.serve(addr).await -> Result<()>     // own listener on NMOS_PORT; bind error → Err (app exits 75)
+node.serve(addr).await -> Result<()>     // own listener on NMOS_PORT; bind error -> Err (app exits 75)
 node.start_registration()                // spawns the task; no-op when registration is off
 node.is_registered() -> bool             // for /readyz only; nothing in the crate touches liveness
 node.shutdown(timeout).await             // DELETE all resources in reverse order, Node last
 
-node.connections() -> Vec<SavedConnection>          // serde; active state of every resource
-node.on_connections_changed(Fn(Vec<SavedConnection>)) // app persists it under /config (G9)
+node.connections() -> Vec<SavedConnection>          // serde; active state of every sender/receiver
 node.restore(Vec<SavedConnection>).await            // calls the callback for each (Cause::Restore)
 ```
 
-Strom does not use the persistence hook: its active connection is the saved flow, as
-today (`IMPLEMENTATION_PLAN.md` G9).
+`on_connections_changed` is called after every change of an `active` state, so the
+application can save it under `/config` (G9). Strom does not use it: its active
+connection is the saved flow, as today (`IMPLEMENTATION_PLAN.md` G9).
 
 ## 6. Git history
 
@@ -284,46 +289,30 @@ commits split and rename the files. Two points (Q7):
   run against the glue (the HTTP ones unchanged; the internals ones point at the crate).
 - Strom's NMOS settings, readiness, shutdown and export/import keep their behaviour,
   except the rows of §4 you approve.
-- BCP-007-03-01 re-run against Strom with the same nmos-testing commit; results in the
-  PR. Q9: add that run to Strom's CI as well?
+- BCP-007-03-01 against Strom with the same nmos-testing commit, as a new job in
+  Strom's CI (Q9).
 - `docs/CHANGELOG.md` entry; Strom's `IMPLEMENTATION_PLAN.md` notes that the
   per-receiver callback makes "no flow restart on routing change" possible (follow-up).
 
-## 9. Order of work after your answers
+## 9. Order of work
 
-1. PR 1: history import + licence files + README skeleton (no behaviour).
-2. PR 2: crate API and model, unit and schema tests.
-3. PR 3: registration, DNS-SD feature, example node, integration and AMWA CI.
+1. PR 2: history import + licence files (no behaviour).
+2. PR 3: crate API and model, unit and schema tests, CI.
+3. PR 4: example node, integration and AMWA CI, docs.
 4. Tag `v0.1.0` with release notes — only with your OK.
 5. Strom PR.
 
-## 10. Open questions
+## 10. Decisions (maintainer, 2026-10-11)
 
-1. **Behaviour changes for Strom (§4).** OK to apply all rows of the table in the Strom
-   switch (scheduled activations, real TAI, strictly increasing versions, 404
-   re-registration, backoff, full deregistration, schema fixes)? They are required by
-   the crate spec but are visible to Strom's controllers.
-2. **Activation timeout for Strom.** Strom's handler restarts a flow and awaits it, which
-   can take several seconds. Proposal: Strom sets `activation_timeout = 30 s` to keep
-   today's behaviour (response after the restart, 500 on failure). Or should Strom's
-   handler accept at once and restart in the background (behaviour change)?
-3. **Readiness in Strom.** Should Strom's `/readyz` also require the Query API listing
-   (stricter, matches the crate spec), or keep today's registration-response readiness?
-4. **Node `hostname`.** Omit it (G5), or keep it for Strom?
-5. **API shape.** A sender is always created as Source + Flow + Sender in one call
-   (what both Strom and the mixer need), not as three separate resources. OK, or do you
-   want separate Source/Flow calls in v0.1.0?
-6. **Domain helpers in the crate.** `domain.rs` (scan, output domain create/remove, the
-   seed-derived output domain id) is G2, not NMOS, but both Strom and the mixer need it
-   and the NMOS constraints depend on it. Keep it in `mxl-nmos` (proposal), or leave it
-   in each app?
-7. **History.** OK to import the 5 commits with `git filter-repo` and rewrite only the
-   `(#N)` references to `LeeO86/strom#N`? The import PR must then be merged with a merge
-   commit. The imported messages keep their `Co-authored-by` tool trailers.
-8. **Images in CI.** nmos-testing from source (pinned commit) and the nmos-cpp registry
-   from `mirror.gcr.io` by digest: OK, or do you prefer a Docker Hub login secret or
-   mirroring the image to GHCR (a new public package)?
-9. **Strom CI.** Add an AMWA BCP-007-03-01 job to Strom's CI in the switch PR, or keep
-   the manual run documented in the PR?
-10. **Crate metadata.** Not published to crates.io (consumers use the git tag); no
-    `authors` field. OK?
+| # | Question | Answer |
+| --- | --- | --- |
+| 1 | Behaviour changes for Strom (§4) | Yes, all of them. |
+| 2 | Activation timeout for Strom | 30 s; Strom's handler keeps restarting the flow before it answers. |
+| 3 | Strom readiness via the Query API | Yes. |
+| 4 | Node `hostname` | Keep it (unsure). The nmos-cpp siblings announce the system hostname in that field too, so the crate keeps it; every address stays an IP literal. |
+| 5 | Sender as one bundled call | No: one resource per call, as in the siblings' nmos-cpp nodes (§5.3). |
+| 6 | Domain helpers in the crate | No: they stay in each application (§3). |
+| 7 | History import with `(#N)` rewritten | Yes. |
+| 8 | nmos-testing from source, registry from `mirror.gcr.io` | Yes. |
+| 9 | AMWA BCP-007-03-01 job in Strom's CI | Yes, in the switch PR. |
+| 10 | Crate metadata | Not on crates.io; `authors = ["Adrian Hilber <LeeO86@users.noreply.github.com>"]`. |
