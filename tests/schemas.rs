@@ -19,7 +19,7 @@ fn validate(dir: &str, file: &str, instance: &Value) {
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let validator = jsonschema::options()
         .with_draft(jsonschema::Draft::Draft4)
-        .with_base_uri(format!("file://{}", path.display()))
+        .with_base_uri(file_uri(&path))
         .build(&schema)
         .unwrap_or_else(|err| panic!("{file}: {err}"));
     let errors: Vec<String> = validator
@@ -27,6 +27,15 @@ fn validate(dir: &str, file: &str, instance: &Value) {
         .map(|e| format!("{} at {}", e, e.instance_path()))
         .collect();
     assert!(errors.is_empty(), "{dir}/{file}: {errors:#?}\n{instance:#}");
+}
+
+fn file_uri(path: &std::path::Path) -> String {
+    let text = path.display().to_string().replace('\\', "/");
+    if text.starts_with('/') {
+        format!("file://{text}")
+    } else {
+        format!("file:///{text}")
+    }
 }
 
 const IS04: &str = "is-04-v1.3.3";
@@ -165,7 +174,7 @@ fn is_valid(dir: &str, file: &str, instance: &Value) -> bool {
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     jsonschema::options()
         .with_draft(jsonschema::Draft::Draft4)
-        .with_base_uri(format!("file://{}", path.display()))
+        .with_base_uri(file_uri(&path))
         .build(&schema)
         .unwrap()
         .is_valid(instance)
