@@ -5,9 +5,10 @@ use std::net::Ipv4Addr;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde_json::{json, Value};
 
-/// The first non-loopback, non-link-local IPv4 address of this host.
+/// The first non-loopback, non-link-local IPv4 address of this host, by
+/// interface index (the order `ip addr` lists them), so the choice is stable.
 pub fn first_routable_ipv4() -> Option<Ipv4Addr> {
-    let interfaces = NetworkInterface::show().ok()?;
+    let interfaces = interfaces_by_index()?;
     interfaces
         .iter()
         .filter(|iface| !is_loopback(iface))
@@ -26,7 +27,7 @@ pub fn first_routable_ipv4() -> Option<Ipv4Addr> {
 /// only when there is nothing else). `attached_network_device` is omitted because
 /// there is no LLDP data; `null` is not valid there.
 pub(crate) fn interfaces_json() -> Value {
-    let Ok(all) = NetworkInterface::show() else {
+    let Some(all) = interfaces_by_index() else {
         return json!([]);
     };
     let mut rows = interface_rows(all.iter().filter(|iface| !is_loopback(iface)));
@@ -53,6 +54,12 @@ fn interface_rows<'a>(interfaces: impl Iterator<Item = &'a NetworkInterface>) ->
         }
     }
     rows
+}
+
+fn interfaces_by_index() -> Option<Vec<NetworkInterface>> {
+    let mut all = NetworkInterface::show().ok()?;
+    all.sort_by(|a, b| a.index.cmp(&b.index).then_with(|| a.name.cmp(&b.name)));
+    Some(all)
 }
 
 fn is_loopback(iface: &NetworkInterface) -> bool {
