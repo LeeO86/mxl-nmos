@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Scheduled activations call the handler at their time, not up to about 1 ms
+  later: the activation is prepared 2 ms early and the last wait blocks on the
+  system clock (`Clock::block_until`) instead of tokio's 1 ms timer. A reader of
+  `/active` right after the time saw the old state (AMWA IS-05-01 test_28 warned
+  "later than expected" in about 15 % of the runs against the mixer).
+
 ## 0.1.0 - 2026-10-11
 
 First release: the NMOS node of `LeeO86/strom` 1.0.1 as a standalone crate.
