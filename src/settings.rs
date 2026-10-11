@@ -35,8 +35,8 @@ pub struct Settings {
     /// Register with a registry at all. The Node and Connection APIs are served
     /// either way.
     pub registration: bool,
-    /// Registration API base URL, for example `http://192.0.2.10:8010`
-    /// (`NMOS_REGISTRY_ADDRESS`, `NMOS_REGISTRY_PORT`).
+    /// Registration API base URL, for example `http://192.0.2.10:8010` or
+    /// `http://nmos-registry:8010` (`NMOS_REGISTRY_ADDRESS`, `NMOS_REGISTRY_PORT`).
     pub registry: Option<String>,
     /// Query API base URL used to confirm the registration
     /// (`NMOS_QUERY_ADDRESS`, `NMOS_QUERY_PORT`). Unset: readiness is the
@@ -127,7 +127,7 @@ impl Settings {
         let registry_port = get("NMOS_REGISTRY_PORT");
         let registry = match (registry_address, registry_port) {
             (Some(address), Some(port)) => {
-                let address = parse_ipv4("NMOS_REGISTRY_ADDRESS", &address)?;
+                let address = parse_host("NMOS_REGISTRY_ADDRESS", &address)?;
                 let port = parse_port("NMOS_REGISTRY_PORT", &port)?;
                 used.push("NMOS_REGISTRY_ADDRESS");
                 used.push("NMOS_REGISTRY_PORT");
@@ -151,7 +151,7 @@ impl Settings {
         let query_address = match get("NMOS_QUERY_ADDRESS") {
             Some(raw) => {
                 used.push("NMOS_QUERY_ADDRESS");
-                Some(parse_ipv4("NMOS_QUERY_ADDRESS", &raw)?)
+                Some(parse_host("NMOS_QUERY_ADDRESS", &raw)?)
             }
             None => None,
         };
@@ -162,7 +162,11 @@ impl Settings {
             }
             None => None,
         };
-        if let Some(query) = query_base_url(self.registry.as_deref(), query_address, query_port) {
+        if let Some(query) = query_base(
+            self.registry.as_deref(),
+            query_address.as_deref(),
+            query_port,
+        ) {
             self.query = Some(query);
         }
         Ok(used)
@@ -231,6 +235,18 @@ pub fn query_base_url(
     query_address: Option<Ipv4Addr>,
     query_port: Option<u16>,
 ) -> Option<String> {
+    query_base(
+        registry,
+        query_address.map(|a| a.to_string()).as_deref(),
+        query_port,
+    )
+}
+
+fn query_base(
+    registry: Option<&str>,
+    query_address: Option<&str>,
+    query_port: Option<u16>,
+) -> Option<String> {
     let registry = registry.and_then(split_http_host);
     let host = match (query_address, &registry) {
         (Some(address), _) => address.to_string(),
@@ -270,6 +286,33 @@ fn parse_ipv4(name: &str, value: &str) -> Result<Ipv4Addr, SettingsError> {
             "{name} must be an IPv4 address, not a name: {value}"
         ))
     })
+}
+
+/// An address to connect to: an IPv4 literal or an RFC 1123 host name (a Service
+/// name on the platform). Announced addresses stay IPv4 literals (G5).
+fn parse_host(name: &str, value: &str) -> Result<String, SettingsError> {
+    let text = value.trim();
+    if text.parse::<Ipv4Addr>().is_ok() {
+        return Ok(text.to_string());
+    }
+    let labels: Vec<&str> = text.trim_end_matches('.').split('.').collect();
+    let valid = !text.is_empty()
+        && text.len() <= 253
+        && labels.iter().all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+        && !labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit()));
+    if valid {
+        Ok(text.to_ascii_lowercase())
+    } else {
+        Err(SettingsError::new(format!(
+            "{name} must be an IPv4 address or a DNS name: {value}"
+        )))
+    }
 }
 
 fn parse_port(name: &str, value: &str) -> Result<u16, SettingsError> {
@@ -354,6 +397,31 @@ mod tests {
     }
 
     #[test]
+    fn registry_and_query_accept_dns_names() {
+        let (s, _) = apply(&[
+            ("NMOS_REGISTRY_ADDRESS", "nmos-registry.platform.svc"),
+            ("NMOS_REGISTRY_PORT", "3210"),
+        ])
+        .unwrap();
+        assert_eq!(
+            s.registry.as_deref(),
+            Some("http://nmos-registry.platform.svc:3210")
+        );
+        assert_eq!(
+            s.query.as_deref(),
+            Some("http://nmos-registry.platform.svc:3211")
+        );
+        let (s, _) = apply(&[
+            ("NMOS_REGISTRY_ADDRESS", "10.0.0.5"),
+            ("NMOS_REGISTRY_PORT", "3210"),
+            ("NMOS_QUERY_ADDRESS", "Query"),
+        ])
+        .unwrap();
+        assert_eq!(s.query.as_deref(), Some("http://query:3211"));
+        assert!(apply(&[("NMOS_HOST_ADDRESS", "node.platform.svc")]).is_err());
+    }
+
+    #[test]
     fn invalid_values_are_errors() {
         for vars in [
             &[("NMOS_HOST_ADDRESS", "node.local")][..],
@@ -367,8 +435,20 @@ mod tests {
             &[("NMOS_REGISTRY_ADDRESS", "10.0.0.5")],
             &[("NMOS_REGISTRY_PORT", "8010")],
             &[
-                ("NMOS_REGISTRY_ADDRESS", "registry"),
+                ("NMOS_REGISTRY_ADDRESS", "nmos registry"),
                 ("NMOS_REGISTRY_PORT", "8010"),
+            ],
+            &[
+                ("NMOS_REGISTRY_ADDRESS", "10.0.0.500"),
+                ("NMOS_REGISTRY_PORT", "8010"),
+            ],
+            &[
+                ("NMOS_REGISTRY_ADDRESS", "-registry"),
+                ("NMOS_REGISTRY_PORT", "8010"),
+            ],
+            &[
+                ("NMOS_QUERY_ADDRESS", "http://q"),
+                ("NMOS_QUERY_PORT", "8011"),
             ],
             &[("NMOS_QUERY_PORT", "x")],
         ] {

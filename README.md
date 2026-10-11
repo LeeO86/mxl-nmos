@@ -76,8 +76,8 @@ also fill `Settings` itself (Strom does, to keep its own aliases and config file
 | `NMOS_TAGS` | `{}` | JSON object of tag name → array of strings, added to the Node and every Device. |
 | `NMOS_HOST_ADDRESS` | first non-loopback IPv4 | IPv4 literal announced in `href`, `api.endpoints` and Device `controls`. Never a name, `0.0.0.0` or loopback. |
 | `NMOS_PORT` | the application's | Port of the Node and Connection APIs. |
-| `NMOS_REGISTRY_ADDRESS`, `NMOS_REGISTRY_PORT` | unset | Static registry (both or neither). Unset: no registration. |
-| `NMOS_QUERY_ADDRESS`, `NMOS_QUERY_PORT` | registry address, registration port + 1 | Query API used for readiness. |
+| `NMOS_REGISTRY_ADDRESS`, `NMOS_REGISTRY_PORT` | unset | Static registry (both or neither); the address is an IPv4 literal or a DNS name. Unset: no registration. |
+| `NMOS_QUERY_ADDRESS`, `NMOS_QUERY_PORT` | registry address, registration port + 1 | Query API used for readiness; the address is an IPv4 literal or a DNS name. |
 | `NMOS_DNS_SD` | `false` | mDNS registry browsing and node advertisement. Needs the `dns-sd` feature; off means neither, and nothing needs Avahi or D-Bus. |
 
 Other `Settings` fields with their defaults: `heartbeat` 5 s, `activation_timeout`
