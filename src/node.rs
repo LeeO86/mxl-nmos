@@ -27,6 +27,9 @@ use crate::Error;
 /// An HTTP status and JSON body.
 pub(crate) type Reply = (u16, Value);
 
+/// A scheduled activation is prepared this long before its time.
+const FINE_WAIT: Duration = Duration::from_millis(2);
+
 /// An NMOS Node. Cheap to clone; all clones share one node.
 #[derive(Clone)]
 pub struct Node {
@@ -513,13 +516,32 @@ impl Node {
         (202, model.staged_json(role, conn, record))
     }
 
-    async fn run_scheduled(&self, role: Role, key: String, seq: u64, at: TaiTime) {
+    async fn wait_until(&self, at: TaiTime) {
+        let clock = self.inner.implementation.clock.clone();
+        if tokio::task::spawn_blocking(move || clock.block_until(at))
+            .await
+            .unwrap_or(false)
+        {
+            return;
+        }
         loop {
             let now = self.now();
             if now >= at {
-                break;
+                return;
             }
             tokio::time::sleep(at.since(now)).await;
+        }
+    }
+
+    /// Prepares the activation shortly before `at` and calls the handler at `at`:
+    /// a reader of `/active` right after `at` sees the new state.
+    async fn run_scheduled(&self, role: Role, key: String, seq: u64, at: TaiTime) {
+        loop {
+            let left = at.since(self.now());
+            if left <= FINE_WAIT {
+                break;
+            }
+            tokio::time::sleep(left - FINE_WAIT).await;
         }
         let _guard = self.inner.activation_lock.lock().await;
         let domains = self.domains();
@@ -559,6 +581,7 @@ impl Node {
                 Err(err) => Err(err),
             }
         };
+        self.wait_until(at).await;
         let result = match prepared {
             Ok((activation, resolved, record)) => {
                 let peer = activation.peer_id;

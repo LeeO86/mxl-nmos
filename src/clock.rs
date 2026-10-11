@@ -112,6 +112,15 @@ impl FromStr for TaiTime {
 pub trait Clock: Send + Sync + 'static {
     /// The current TAI time.
     fn now(&self) -> TaiTime;
+
+    /// Block the calling thread until `at` and return `true`, or return `false`
+    /// when this clock cannot (the default), and the node waits on tokio's timer
+    /// instead. Scheduled activations use it for their last 2 ms, because tokio's
+    /// timer has 1 ms steps and fires up to 1 ms late.
+    fn block_until(&self, at: TaiTime) -> bool {
+        let _ = at;
+        false
+    }
 }
 
 /// The system's TAI clock.
@@ -121,6 +130,16 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> TaiTime {
         system_tai_now()
+    }
+
+    fn block_until(&self, at: TaiTime) -> bool {
+        loop {
+            let now = self.now();
+            if now >= at {
+                return true;
+            }
+            std::thread::sleep(at.since(now));
+        }
     }
 }
 
@@ -191,6 +210,14 @@ mod tests {
         assert_eq!(t.plus(Duration::from_nanos(2)), TaiTime::new(11, 1));
         assert_eq!(TaiTime::new(12, 0).since(t), Duration::new(1, 1));
         assert_eq!(t.since(TaiTime::new(12, 0)), Duration::ZERO);
+    }
+
+    #[test]
+    fn system_clock_blocks_until_the_time() {
+        let at = SystemClock.now().plus(Duration::from_millis(3));
+        assert!(SystemClock.block_until(at));
+        assert!(SystemClock.now() >= at);
+        assert!(SystemClock.block_until(TaiTime::default()));
     }
 
     #[test]

@@ -5,6 +5,11 @@
 - `NMOS_REGISTRY_ADDRESS` and `NMOS_QUERY_ADDRESS` accept a DNS name (for example a
   Kubernetes Service name) as well as an IPv4 literal. `NMOS_HOST_ADDRESS` stays an
   IPv4 literal.
+- Scheduled activations call the handler at their time, not up to about 1 ms
+  later: the activation is prepared 2 ms early and the last wait blocks on the
+  system clock (`Clock::block_until`) instead of tokio's 1 ms timer. A reader of
+  `/active` right after the time saw the old state (AMWA IS-05-01 test_28 warned
+  "later than expected" in about 15 % of the runs against the mixer).
 
 ## 0.1.0 - 2026-10-11
 
