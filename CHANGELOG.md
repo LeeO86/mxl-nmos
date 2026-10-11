@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-10-11
 
 - `NMOS_REGISTRY_ADDRESS` and `NMOS_QUERY_ADDRESS` accept a DNS name (for example a
   Kubernetes Service name) as well as an IPv4 literal. `NMOS_HOST_ADDRESS` stays an
