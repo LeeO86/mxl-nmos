@@ -1,0 +1,369 @@
+From 5e2dfe62cbd3f3f2016c3e3eb6a57c79c002d1bd Mon Sep 17 00:00:00 2001
+From: Adrian Hilber <LeeO86@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 18:28:22 +0000
+Subject: [PATCH 3/4] ci: AMWA BCP-007-03-01 against Strom's NMOS node
+
+scripts/nmos-amwa/run.sh starts an nmos-cpp registry (mirror.gcr.io)
+and Strom headless with one MXL video output and one MXL audio input,
+runs nmos-testing 9001851 from source, and fails on any result not
+listed in expected.json.
+---
+ .github/workflows/ci.yml        | 86 +++++++++++++++++++++++++++++++++
+ scripts/nmos-amwa/check_amwa.py | 56 +++++++++++++++++++++
+ scripts/nmos-amwa/expected.json | 77 +++++++++++++++++++++++++++++
+ scripts/nmos-amwa/registry.json | 16 ++++++
+ scripts/nmos-amwa/run.sh        | 75 ++++++++++++++++++++++++++++
+ 5 files changed, 310 insertions(+)
+ create mode 100755 scripts/nmos-amwa/check_amwa.py
+ create mode 100644 scripts/nmos-amwa/expected.json
+ create mode 100644 scripts/nmos-amwa/registry.json
+ create mode 100755 scripts/nmos-amwa/run.sh
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index d0041e4..a3c6725 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -157,6 +157,92 @@ jobs:
+       - name: Run tests on frontend
+         run: cargo test --package strom-frontend
+ 
++  # AMWA BCP-007-03-01 against Strom's NMOS node (the mxl-nmos crate), with an
++  # nmos-cpp registry. nmos-testing is installed from source at a pinned commit
++  # and the registry comes from mirror.gcr.io, so nothing is pulled from Docker Hub.
++  nmos-amwa:
++    name: NMOS AMWA BCP-007-03-01
++    if: github.event.action != 'labeled'
++    needs: preflight
++    runs-on: ubuntu-24.04
++    timeout-minutes: 25
++    env:
++      RUSTC_WRAPPER: ${{ needs.preflight.outputs.cache_ok == 'true' && 'sccache' || '' }}
++      NMOS_TESTING_REF: 90018513758e6fbc096c26d7ef001f700b28b510
++    steps:
++      - uses: actions/checkout@v6
++
++      - name: Install Rust stable
++        uses: dtolnay/rust-toolchain@stable
++
++      # Same package list as check-linux, so both jobs share one apt cache entry.
++      - name: Cache apt packages
++        uses: awalsh128/cache-apt-pkgs-action@v1.6.1
++        with:
++          packages: libunwind-dev libssl-dev libcairo2-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-gl gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice pkg-config cmake libclang-dev
++          version: 1.5
++
++      - name: Cache Rust dependencies
++        uses: Swatinem/rust-cache@v2
++        with:
++          shared-key: linux-x86_64
++          cache-on-failure: true
++          save-if: false
++
++      - name: Setup sccache
++        if: needs.preflight.outputs.cache_ok == 'true'
++        uses: mozilla-actions/sccache-action@v0.0.10
++
++      - name: Build Strom
++        run: cargo build --package strom --features mxl
++
++      - uses: actions/setup-python@v6
++        with:
++          python-version: "3.12"
++
++      # nmos-testing computes TAI as UTC + 37 s; CLOCK_TAI on the runner is UTC
++      # until the kernel's TAI offset is set.
++      - name: Kernel TAI offset
++        run: |
++          sudo python3 - <<'PY'
++          import ctypes, ctypes.util, time
++          class Timeval(ctypes.Structure):
++              _fields_ = [("s", ctypes.c_long), ("u", ctypes.c_long)]
++          class Timex(ctypes.Structure):
++              _fields_ = [("modes", ctypes.c_uint)] + [(n, ctypes.c_long) for n in ("offset", "freq", "maxerror", "esterror")] + \
++                  [("status", ctypes.c_int)] + [(n, ctypes.c_long) for n in ("constant", "precision", "tolerance")] + \
++                  [("time", Timeval)] + [(n, ctypes.c_long) for n in ("tick", "ppsfreq", "jitter")] + [("shift", ctypes.c_int)] + \
++                  [(n, ctypes.c_long) for n in ("stabil", "jitcnt", "calcnt", "errcnt", "stbcnt")] + [("tai", ctypes.c_int), ("pad", ctypes.c_int * 11)]
++          tx = Timex(modes=0x0080, constant=37)
++          assert ctypes.CDLL(ctypes.util.find_library("c")).adjtimex(ctypes.byref(tx)) >= 0
++          print("TAI-UTC", round(time.clock_gettime(time.CLOCK_TAI) - time.clock_gettime(time.CLOCK_REALTIME), 3))
++          PY
++
++      - name: nmos-testing
++        run: |
++          mkdir -p "$RUNNER_TEMP/nmos-testing"
++          curl -fsSL "https://codeload.github.com/AMWA-TV/nmos-testing/tar.gz/$NMOS_TESTING_REF" |
++            tar xz -C "$RUNNER_TEMP/nmos-testing" --strip-components=1
++          python -m venv "$RUNNER_TEMP/venv"
++          "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check -r "$RUNNER_TEMP/nmos-testing/requirements.txt"
++
++      - name: BCP-007-03-01
++        run: scripts/nmos-amwa/run.sh target/debug/strom
++        env:
++          NMOS_TESTING_DIR: ${{ runner.temp }}/nmos-testing
++          NMOS_TESTING_PYTHON: ${{ runner.temp }}/venv/bin/python
++          AMWA_OUT: ${{ runner.temp }}/amwa
++
++      - name: Summary
++        if: always()
++        run: cat "$RUNNER_TEMP/amwa/summary.md" >> "$GITHUB_STEP_SUMMARY" || true
++
++      - uses: actions/upload-artifact@v7
++        if: always()
++        with:
++          name: nmos-amwa
++          path: ${{ runner.temp }}/amwa
++
+   # WASM: clippy + build frontend
+   check-wasm:
+     name: Check & Build (WASM)
+diff --git a/scripts/nmos-amwa/check_amwa.py b/scripts/nmos-amwa/check_amwa.py
+new file mode 100755
+index 0000000..0e31503
+--- /dev/null
++++ b/scripts/nmos-amwa/check_amwa.py
+@@ -0,0 +1,56 @@
++#!/usr/bin/env python3
++"""Compare nmos-testing results with the expected non-pass results.
++
++    check_amwa.py <results-dir> <expected.json>
++
++Every test must pass, or end in exactly the state the expected file lists for it
++(with the reason). A listed test that now ends differently fails too, so the
++list never hides a change. Writes <results-dir>/summary.md.
++"""
++import json
++import pathlib
++import sys
++from collections import Counter
++
++
++def main():
++    out = pathlib.Path(sys.argv[1])
++    expected = json.loads(pathlib.Path(sys.argv[2]).read_text())
++    problems = []
++    lines = ["| Suite | Results |", "| --- | --- |"]
++    for suite, listed in expected.items():
++        if suite.startswith("_"):
++            continue
++        path = out / f"{suite}.json"
++        if not path.exists():
++            problems.append(f"{suite}: no results ({path})")
++            continue
++        results = json.loads(path.read_text())["results"]
++        counts = Counter(r["state"] for r in results)
++        lines.append(f"| {suite} | {', '.join(f'{k} {v}' for k, v in sorted(counts.items()))} |")
++        seen = set()
++        for r in results:
++            name, state = r["name"], r["state"]
++            seen.add(name)
++            want = listed.get(name)
++            if want is None:
++                if state != "Pass":
++                    problems.append(f"{suite} {name}: {state}: {r['description']} | {r['detail']}")
++            elif want["state"] != state:
++                problems.append(f"{suite} {name}: expected {want['state']} ({want['reason']}), got {state}: {r['detail']}")
++        for name in listed:
++            if name not in seen:
++                problems.append(f"{suite} {name}: listed but not run")
++    summary = "\n".join(lines)
++    (out / "summary.md").write_text(summary + "\n")
++    print(summary)
++    if problems:
++        print("\nUnexpected results:")
++        for p in problems:
++            print("  " + p)
++        sys.exit(1)
++    print("\nAll results are Pass or expected.")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/nmos-amwa/expected.json b/scripts/nmos-amwa/expected.json
+new file mode 100644
+index 0000000..25b3c01
+--- /dev/null
++++ b/scripts/nmos-amwa/expected.json
+@@ -0,0 +1,77 @@
++{
++  "_comment": "Every non-Pass result of scripts/nmos-amwa/run.sh against Strom, with the reason. check_amwa.py fails on any other result.",
++  "BCP-007-03-01": {
++    "__init__": {
++      "state": "Not Applicable",
++      "reason": "tool set-up step"
++    },
++    "set_up_tests": {
++      "state": "Not Applicable",
++      "reason": "tool set-up step"
++    },
++    "auto_connection_23": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_connection_24": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_connection_25": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_connection_26": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_connection_27": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_connection_28": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_connection_29": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_17": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_18": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_19": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_20": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_21": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_22": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "auto_node_23": {
++      "state": "Test Disabled",
++      "reason": "IS-10 authorization is out of scope"
++    },
++    "test_15": {
++      "state": "Manual",
++      "reason": "manual: the tool cannot see MXL reads/writes"
++    },
++    "tear_down_tests": {
++      "state": "Not Applicable",
++      "reason": "tool set-up step"
++    }
++  }
++}
+diff --git a/scripts/nmos-amwa/registry.json b/scripts/nmos-amwa/registry.json
+new file mode 100644
+index 0000000..b1641b7
+--- /dev/null
++++ b/scripts/nmos-amwa/registry.json
+@@ -0,0 +1,16 @@
++{
++  "label": "mxl-nmos-ci-registry",
++  "logging_level": 0,
++  "pri": 100,
++  "registration_port": 8010,
++  "query_port": 8011,
++  "query_ws_port": 8012,
++  "node_port": 8013,
++  "system_port": 8014,
++  "settings_port": 8015,
++  "logging_port": 8016,
++  "admin_port": 8017,
++  "mdns_port": 8018,
++  "schemas_port": 8019,
++  "registration_expiry_interval": 12
++}
+diff --git a/scripts/nmos-amwa/run.sh b/scripts/nmos-amwa/run.sh
+new file mode 100755
+index 0000000..715ffd8
+--- /dev/null
++++ b/scripts/nmos-amwa/run.sh
+@@ -0,0 +1,75 @@
++#!/usr/bin/env bash
++# AMWA BCP-007-03-01 against Strom's NMOS node (the mxl-nmos crate).
++#
++#   scripts/nmos-amwa/run.sh <strom-binary>
++#
++# Starts an nmos-cpp registry (Registration API 8010, Query API 8011) and Strom
++# headless with flows.json (one MXL video output, one MXL audio input, not
++# running) and one MXL domain, then runs the suite. Needs docker, an nmos-testing
++# checkout with its requirements in $NMOS_TESTING_DIR / $NMOS_TESTING_PYTHON, and
++# the kernel TAI offset set to 37 s. check_amwa.py fails on any result not listed
++# in expected.json.
++set -euo pipefail
++
++STROM_BIN="${1:?usage: run.sh <strom-binary>}"
++HERE="$(cd "$(dirname "$0")" && pwd)"
++TOOL="${NMOS_TESTING_DIR:?set NMOS_TESTING_DIR}"
++PY="${NMOS_TESTING_PYTHON:?set NMOS_TESTING_PYTHON}"
++OUT="${AMWA_OUT:-$PWD/amwa-out}"
++IMAGE="${NMOS_REGISTRY_IMAGE:-mirror.gcr.io/rhastie/nmos-cpp@sha256:c54c8ded3b61740dbd579c03892b0229842250417aa397d87a92e2b91ba645b8}"
++HOST_IP="${HOST_IP:-$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')}"
++PORT=3313
++WORK="$(mktemp -d)"
++mkdir -p "$OUT" "$WORK/config" "$WORK/mxl/amwa"
++STROM_PID=""
++
++cleanup() {
++    if [[ -n "$STROM_PID" ]] && kill -0 "$STROM_PID" 2>/dev/null; then
++        kill -TERM "$STROM_PID"
++        wait "$STROM_PID" || true
++    fi
++    docker logs strom-amwa-registry >"$OUT/registry.log" 2>&1 || true
++    docker rm -f strom-amwa-registry >/dev/null 2>&1 || true
++    rm -rf "$WORK"
++}
++trap cleanup EXIT
++
++wait_http() {
++    for _ in $(seq 1 $(($2 * 5))); do
++        curl -fsS -o /dev/null "$1" 2>/dev/null && return 0
++        sleep 0.2
++    done
++    echo "timeout waiting for $1" >&2
++    return 1
++}
++
++docker rm -f strom-amwa-registry >/dev/null 2>&1 || true
++docker run -d --name strom-amwa-registry --network host \
++    -v "$HERE/registry.json:/home/registry.json:ro" "$IMAGE" >/dev/null
++wait_http "http://$HOST_IP:8011/x-nmos/query/v1.3/nodes" 60
++
++cp "$HERE/flows.json" "$WORK/config/flows.json"
++cat >"$WORK/mxl/amwa/domain_def.json" <<'EOF'
++{"id": "3310f209-9351-47c0-b9a2-14c59b6a4c23", "label": "AMWA", "description": "AMWA test domain", "tags": {}}
++EOF
++
++CONFIG_DIR="$WORK/config" PORT="$PORT" NMOS_SEED=strom-amwa NMOS_HOST_ADDRESS="$HOST_IP" \
++    NMOS_REGISTRY_ADDRESS="$HOST_IP" NMOS_REGISTRY_PORT=8010 MXL_DOMAIN_SCAN_PATH="$WORK/mxl" \
++    STROM_NMOS_DOMAINS="$WORK/mxl/amwa" RUST_LOG=info \
++    "$STROM_BIN" --headless >"$OUT/strom.log" 2>&1 &
++STROM_PID=$!
++wait_http "http://$HOST_IP:$PORT/readyz" 60
++
++cat >"$TOOL/nmostesting/UserConfig.py" <<EOF
++from . import Config as CONFIG
++CONFIG.ENABLE_DNS_SD = False
++CONFIG.QUERY_API_HOST = "$HOST_IP"
++CONFIG.QUERY_API_PORT = 8011
++EOF
++set +e
++(cd "$TOOL" && "$PY" nmos-test.py suite BCP-007-03-01 --selection all \
++    --host "$HOST_IP" "$HOST_IP" --port "$PORT" "$PORT" --version v1.3 v1.2 \
++    --output "$OUT/BCP-007-03-01.json") >"$OUT/BCP-007-03-01.log" 2>&1
++echo "BCP-007-03-01 exited $?"
++set -e
++python3 "$HERE/check_amwa.py" "$OUT" "$HERE/expected.json"
+-- 
+2.43.0
+
