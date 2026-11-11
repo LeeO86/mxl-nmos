@@ -4,6 +4,8 @@ An AMWA NMOS Node for MXL media functions, in Rust: the IS-04 v1.3 Node API, the
 IS-05 v1.2 Connection API and the BCP-007-03 MXL transport
 (`urn:x-nmos:transport:mxl`), with registration to a static IS-04 registry.
 
+Used by the media functions in [mxl-stack](https://github.com/LeeO86/mxl-stack), a collection of open-source MXL media functions.
+
 It was extracted from the NMOS node of [`LeeO86/strom`](https://github.com/LeeO86/strom)
 (see [`docs/extraction-plan.md`](docs/extraction-plan.md)) and is used by Strom and by
 [`LeeO86/mxl-audio-mixer`](https://github.com/LeeO86/mxl-audio-mixer).
